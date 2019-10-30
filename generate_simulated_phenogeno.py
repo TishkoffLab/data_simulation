@@ -164,12 +164,15 @@ def run_msprime_tskit(theta,sample_nums,L,r,mu,R):
         )
     return ts_replicates
 
+#Given a list of indexes to draw from and a number of individuals to draw, returns a randomly assigned list of 2 indexes per person
+#This is used to create the haplotypes from single population
+#    samp_size: list of the indexes that are available, and will be distributed to the individuals. Should be >=(2*num_inds)
+#    num_inds: number of people that we want to assign indexes to. Each individual will have 2 indexes at the end
+#returns ind_haps_dict: a dictionary. The keys are the individuals (a number for each), and the values are tuples where each number corrisponds to a position in the genotype list.
 def assign_genotype_index(samp_size,num_inds):
     ind_haps_dict = {}
     haps_used = []
-    x = num_inds
-#     x = int(samp_size/2)
-    for n in range(x):
+    for n in range(num_inds):
         curr_haps = []
         while (len(curr_haps) != 2):
             temp_seq_num = random.randint(0,(samp_size-1))
@@ -179,17 +182,11 @@ def assign_genotype_index(samp_size,num_inds):
         ind_haps_dict[n] = curr_haps
     return ind_haps_dict
 
-# def save_pheno_vcf(samp_size,seq_len,num_individuals,outname):
-#     tree_sequence = msprime.simulate(sample_size=samp_size, Ne=1e4, length=seq_len, recombination_rate=2e-8,mutation_rate=2e-8) 
-#     new_ids = []
-#     for i in range(num_individuals):
-#         new_ids.append(''.join(['ID',str(i)]))
-        
-#     with open('{0}.vcf'.format(outname), "w") as vcf_file:
-#         tree_sequence.write_vcf(vcf_file, ploidy=2,individual_names=new_ids)
 
+#Returns a phenotype value for the indivudal with the genotypes provieded; the sum of all the causal genotypes multiplied by the beta value
+#    genotypes: list of tuples, where the tuples contain values of 0 or 1. These tuples are each the genotype for a signle individual from the causal SNP in each replicate.
+#    beta: a float, representing the genetic component for the individual. Drawn from a distribution of values, but this could be altered as needed.
 def estimate_pheno(genotypes,beta):
-#     causal_pos = 0 #int(len(genotype[0])/2)
     full_phenovals = []
     for g in genotypes:
         try:
@@ -200,7 +197,11 @@ def estimate_pheno(genotypes,beta):
             print("Error!",g)
     return sum(full_phenovals)
 
-def plot_phenodist(pheno_dict, num_inds,outname):
+#Plots the distribution of phenotype values for all the individuals as a histogram, as well as a line representing a normal distribution over those bins, for verification
+#  x-axis is the phenotype value, and the y-axis is the number of individuals in the bin
+#    pheno_dict: dictionary of the phenotypes for the individuals. Keys are the individuals (as sequential integers), values are phenotype for that individual (as a float)
+#    outname: the name of the file to save the plot as, in the format of <outname>.phenodist.png
+def plot_phenodist(pheno_dict,outname):
     pheno_df = DataFrame(pheno_dict.values(),index=pheno_dict.keys(),columns=['Pheno_value'])
 
     mu, std = norm.fit(pheno_df['Pheno_value'])
@@ -209,7 +210,7 @@ def plot_phenodist(pheno_dict, num_inds,outname):
 
     xmin, xmax = pyplot.xlim()
     x = np.linspace(xmin, xmax, 100)
-    p = (norm.pdf(x, mu, std))*(num_inds*2)
+    p = (norm.pdf(x, mu, std))*(len(pheno_dict)*2)
     pyplot.plot(x, p, 'k', linewidth=2)
     title = "Fit results: mu = %.2f,  std = %.2f" % (mu, std)
     pyplot.title(title)
@@ -217,12 +218,21 @@ def plot_phenodist(pheno_dict, num_inds,outname):
     pyplot.xlabel('Phenotype Value')
     pyplot.savefig('{0}.phenodist.png'.format(outname))
 
+#Get a distribution of values to use as betas for the phenotype calculation
+#  right now, it only has one kind of distribution that it can generate, but in the future we can add different kinds of distributions to generate
+#    num_inds (int): number of individuals, the distribution will generate this number of values.
+#returns dist: an array of length <num_inds>, each position corrisponds to the beta for the individual with that number as their ID.
 def generate_betas(num_inds,dist_type='normal'):
     if(dist_type == 'normal'):
         dist = np.random.normal(0,0.1,num_inds)
     return dist
 
-
+#Saves the phenotype file. It is a tab-seperated file with 2 columns; the first column is the ID of the individual, and the second column is the phenotype value for that individual
+#  IDs are converted from a single int into ID<id_num> for compliance with plink id restrictions. If there are multiple populations, it will be converted to POP<pop_num>ID<id_num>
+#    outname: name of the file that it will be saved as, <outname>.phenotypes
+#    pheno_dict: dictionary of phenotype values per individual. Keys are the individual ID number, and values are the phenotype vaule (a float)
+#    popid_dict: dictionary of the individual to their population number. Keys are the individual ID number, and the value is the population id that they belong to (int). If it is not
+#                provided, then there is only one population and this variable is ignored.
 def write_phenofile(outname,pheno_dict,popid_dict=None):
     pheno_file = open('{0}.phenotypes'.format(outname),'w')
     if(popid_dict == None):
@@ -237,6 +247,15 @@ def write_phenofile(outname,pheno_dict,popid_dict=None):
         pheno_file.write('{0}\t{1}\n'.format(new_ids[ind],p))
     pheno_file.close()
 
+#Runs the msprime simulation that generates phenotypes, as well as saves the genotypes that were used to create that phenotypes as a vcf file. 
+#  This function is only used if there is a single population and only one time period.
+#    samp_size (int): number of genomes to simulate, should be at least double the num_individuals
+#    seq_len (int): length of the sequence that will be simulated
+#    L (int): number of replicates to use in generating the simulation
+#    num_individuals (int): number of people that we want to simulate phenotypes/genotypes for, 2 genomes per person
+#    outname: name of the file that will be saved
+#    beta: type of distribution that will be used to pull beta values from
+#    causal_var_id: the id of the variant that will be used as the causal variant. Defaults to 1, meaning the first variant will be counted as the causal variants.
 def run_pheno_simulation(samp_size,seq_len,L,num_individuals,outname,beta,causal_var_id=1):
     genotype_index_byinds = assign_genotype_index(samp_size,num_individuals) #randomly take the <samp_size> number of genomes simulated, and randomly assign to each individual 2 of them
     causalgenotypes_byind = {x:[] for x in range(num_individuals)}
@@ -400,6 +419,7 @@ def write_genovcf(full_geno_dict,causal_pos_dict,outname,seq_len,window_spacer=1
 
             except:
                 print(rep,genos)
+    vcf_file.close()
         
 def assign_pop_inds(pop_sizes):
     pop_assign = []  # row index = pop index. value = list of indices of samples assigned to each pop.
@@ -437,6 +457,16 @@ def get_ind_genoindex_multipop(genoind_bypops):
         prev_pn += len(p[1])
     return ind_genoindex_dict
 
+
+def thetas_toskip(theta):
+    bad_theta_nums = []
+    for epoch in range(len(theta)):
+        curr_theta = theta[:epoch+1]
+        if(set([all(x == 0) for x in curr_theta[-1][1][1]]) == {True}):
+            bad_theta_nums.append(epoch)
+    return bad_theta_nums
+
+
 #Runs the phenotype-generating simulation, for multiple populations and multiple epochs
 #Returns a 2 lists of dictionaries; per epoch. 
 #    causalpos_byepoch: for each replicate in the epoch, contains the position that was used to calculate the phenotype. Used to indicate in the output vcf file which SNP is the causal one
@@ -445,7 +475,7 @@ def run_pheno_simulation_multipops(theta,seq_len,reps,pop_schemes,r,mu,outname,b
     
     genos_byepoch = []
     causalpos_byepoch = []
-
+    epochs_toskip = thetas_toskip(theta)
     for epoch in range(len(theta)):
         print('Starting epoch {0} replicates'.format(epoch+1))
 
@@ -461,7 +491,10 @@ def run_pheno_simulation_multipops(theta,seq_len,reps,pop_schemes,r,mu,outname,b
 
 
         curr_theta = theta[:epoch+1]
-        print('epoch {0} theta = {1}'.format(epoch,curr_theta))
+        if(epoch in epochs_toskip):
+            print('Epoch {0} has no migration, skipping this epoch due to memory constraints')
+            continue
+        # print('epoch {0} theta = {1}'.format(epoch,curr_theta))
         tsreps = run_msprime_tskit(curr_theta,pop_sizes,seq_len,r,mu,reps)
         # pdb.set_trace()
         print('replicate trees created; iterating through genotypes now')
@@ -506,6 +539,7 @@ def run_pheno_simulation_multipops(theta,seq_len,reps,pop_schemes,r,mu,outname,b
                         print(rep,indiv,index,len(geno))
                 curr_rep_fullgenos[pos] = temp_fullgeno
             fullgenotypes_byrep[rep] = curr_rep_fullgenos
+
         print('finished iterating through trees, starting the phenotype calculations')
         causalgenotypes_byind = {x:[] for x in range(full_sampsize)}
         for pos,genos in causalgenotypes_byrep.items():
@@ -552,12 +586,21 @@ if __name__ == "__main__":
     else:
         
         theta,sample_schemes = read_input_file(args.input_file)
-        
+        epochs_toskip = thetas_toskip(theta)
         cpos_pheno_byinds,pgenos_byinds = run_pheno_simulation_multipops(theta,int(args.seq_len),int(args.L),sample_schemes,float(args.recombination_rate),float(args.mutation_rate),args.out_name,beta)
+        curr_epoch = 0
         for epoch,pg in enumerate(pgenos_byinds):
+            while curr_epoch in epochs_toskip:
+                curr_epoch += 1
+            print('starting creation of vcf for epoch {0} simulation'.format(curr_epoch))
             curr_popid_dict = assign_popdict(sample_schemes[epoch])
-            write_genovcf(pg,cpos_pheno_byinds[epoch],'{0}.epoch{1}.pheno'.format(args.out_name,epoch),int(args.seq_len),window,curr_popid_dict)
-
+            write_genovcf(full_geno_dict=pg,
+                causal_pos_dict=cpos_pheno_byinds[epoch],
+                outname='{0}.epoch{1}.pheno'.format(args.out_name,curr_epoch),
+                seq_len=int(args.seq_len),
+                window_spacer=window,
+                popid_dict=curr_popid_dict)
+            curr_epoch += 1
         # cpos_geno_byind,genos_byinds = run_geno_simulation(int(args.samp_size),int(args.seq_len),int(args.L),int(args.num_individuals))
         # write_genovcf(genos_byinds,cpos_geno_byind,'{0}.geno'.format(args.out_name),int(args.num_individuals),int(args.seq_len),window)
     
