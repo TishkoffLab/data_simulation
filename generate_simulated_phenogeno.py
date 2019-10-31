@@ -492,7 +492,7 @@ def run_pheno_simulation_multipops(theta,seq_len,reps,pop_schemes,r,mu,outname,b
 
         curr_theta = theta[:epoch+1]
         if(epoch in epochs_toskip):
-            print('Epoch {0} has no migration, skipping this epoch due to memory constraints')
+            print('Epoch {0} has no migration, skipping this epoch due to memory constraints'.format(epoch))
             continue
         # print('epoch {0} theta = {1}'.format(epoch,curr_theta))
         tsreps = run_msprime_tskit(curr_theta,pop_sizes,seq_len,r,mu,reps)
@@ -590,6 +590,7 @@ if __name__ == "__main__":
         cpos_pheno_byinds,pgenos_byinds = run_pheno_simulation_multipops(theta,int(args.seq_len),int(args.L),sample_schemes,float(args.recombination_rate),float(args.mutation_rate),args.out_name,beta)
         curr_epoch = 0
         for epoch,pg in enumerate(pgenos_byinds):
+            #Since we don't run a simulation where the final migration matrix is all zero, we want the output vcf files to match up with the output phenotypes
             while curr_epoch in epochs_toskip:
                 curr_epoch += 1
             print('starting creation of vcf for epoch {0} simulation'.format(curr_epoch))
