@@ -72,17 +72,37 @@ def assign_genotype_index_multipop(samp_sizes,pop_sizes):
         ind_haps_dict_bypop[n] = temp_popinds
     return ind_haps_dict_bypop
 
+
+def read_input_migrationmatrix(filename,num_epochs):
+    mfile = open(filename,'r')
+    migmats_byepoch = [[] for x in range(num_epochs)]
+    for line in mfile:
+        if(line[0] == '#'):
+            curr_migmat = int(line[1])
+        else:
+            curr_mm = np.array([float(f) for f in line.split('\n')[0].split('\t')])
+            migmats_byepoch[curr_migmat].append(curr_mm)
+    mfile.close()
+    return migmats_byepoch
+
 #Reads in a file that has the epochs that we want to simulate. The file needs to be in a tab-seperated file, with a header.
+#The file needs to be named <filename>.epochs
 #Each line after the header represents 1 epoch. Necessary columns include:
 #time: starting time of the epoch
 #init_pops: the number of people in each population that will be simulated
 #num_pops: the number of different populations that we want to simulate
-#migration_rate: the rate of migration for the epoch
+#migration_rate: the rate of migration for the epoch. This is only necessary if you want to 
 def read_input_file(filename):
-    input_df = read_csv(filename,sep='\t')
+    input_df = read_csv('{0}.epochs'.format(filename),sep='\t')
     num_theta = len(input_df)
     theta_true = []
     sample_scheme_byepoch = []
+    migmat_fromfile = None
+    try:
+        mm_file = '{0}.migration_matrix'.format(filename)
+        migmat_fromfile = get_input_migrationmatrix(filename,num_theta)
+    except:
+        pass
     # Set the demographic model parameters (theta)...
     for epoch,t in input_df.iterrows():
         Np = len(t['pop_scheme'].split(','))               # Num pops
@@ -90,18 +110,19 @@ def read_input_file(filename):
         sample_scheme = [int(x) for x in t['pop_scheme'].split(',')]   # Num samples drawn from each pop for likelihood
 
         # pop sizes
-        N_base = 1e4    # Number of diploids in the population
-        Ne0 = np.ones(Np)*N_base
-
-        # Set migration rates
-        M_base = float(t['migration_rate'])
-        m = np.zeros((Np,Np))
-        for i in range(Np):
-            for j in range(Np):
-                if j!=i:
-                    m[i,j] = M_base/(2*(Np-1))
-        
-        theta_true.append([float(t['time']),[Ne0,m]])
+        if(migmat_fromfile is None):
+            N_base = 1e4    # Number of diploids in the population
+            Ne0 = np.ones(Np)*N_base
+            # Set migration rates
+            M_base = float(t['migration_rate'])
+            m = np.zeros((Np,Np))
+            for i in range(Np):
+                for j in range(Np):
+                    if j!=i:
+                        m[i,j] = M_base/(2*(Np-1))
+            theta_true.append([float(t['time']),[Ne0,m]])
+        else:
+            theta_true.append([float(t['time']),migmat_fromfile[epoch]])
         sample_scheme_byepoch.append(pop_sizes)
 
     return theta_true,sample_scheme_byepoch
@@ -600,7 +621,12 @@ if __name__ == "__main__":
     else:
         
         theta,sample_schemes = read_input_file(args.input_file)
+        popdicts_by_epoch = {}
         epochs_toskip = thetas_toskip(theta)
+        for ep,sampsch in enumerate(sample_schemes):
+            if(ep in epochs_toskip):
+                continue
+            popdicts_by_epoch[ep] = assign_popdict(sampsch)
         cpos_pheno_byinds,pgenos_byinds = run_pheno_simulation_multipops(theta,int(args.seq_len),int(args.L),sample_schemes,float(args.recombination_rate),float(args.mutation_rate),args.out_name,beta)
         curr_epoch = 0
         for epoch,pg in enumerate(pgenos_byinds):
@@ -608,7 +634,7 @@ if __name__ == "__main__":
             while curr_epoch in epochs_toskip:
                 curr_epoch += 1
             print('starting creation of vcf for epoch {0} simulation'.format(curr_epoch))
-            curr_popid_dict = assign_popdict(sample_schemes[epoch])
+            curr_popid_dict = popdicts_by_epoch[curr_epoch]
             write_genovcf(full_geno_dict=pg,
                 causal_pos_dict=cpos_pheno_byinds[epoch],
                 outname='{0}.epoch{1}.pheno'.format(args.out_name,curr_epoch),
