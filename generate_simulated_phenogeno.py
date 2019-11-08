@@ -53,12 +53,13 @@ def assign_genotype_index_multipop(samp_sizes,pop_sizes):
             return -1
     ind_haps_dict_bypop = {x:[] for x in range(len(pop_sizes))}
     x = sum(pop_sizes)
+    prev_indstart = 0
     for n,p in enumerate(pop_sizes):
         num_inds_tosample = samp_sizes[n]
         curr_popinds = []
-#         print(n,p,num_inds_tosample)
         for x in range(p):
-            curr_popinds.append(x + (n*p))
+            curr_popinds.append(x + prev_indstart)
+        
         popinds_used = []
         temp_popinds = []
         for x in range(num_inds_tosample):
@@ -70,9 +71,14 @@ def assign_genotype_index_multipop(samp_sizes,pop_sizes):
                     popinds_used.append(temp_seq_num)
             temp_popinds.append(curr_haps)
         ind_haps_dict_bypop[n] = temp_popinds
+        prev_indstart += p
     return ind_haps_dict_bypop
 
-
+#Reads in a migration matrix file. File format is #<epoch_num>, followed by a number of lines equal to the population number with the migration value of that 
+#population against all others (must have zeros along axis); for each epoch
+#    filename (string): name of the migration matrix file. Should be equal to <input_file>.migration_matrix, in the same folder as the <input_file>.epoch file
+#    num_epochs (int): number of epochs
+#Returns migmats_byepoch: a list of matrices, one matrix per epoch
 def read_input_migrationmatrix(filename,num_epochs):
     mfile = open(filename,'r')
     migmats_byepoch = [[] for x in range(num_epochs)]
@@ -127,6 +133,36 @@ def read_input_file(filename):
 
     return theta_true,sample_scheme_byepoch
 
+def read_input_file_full(filename):
+    infile = open(filename,'r')
+    theta_true = []
+    sample_scheme_byepoch = []
+    curr_epoch = -1
+    migmats_byepoch = {}
+    times_byepoch = []
+    for line in infile:
+        if(line[0] == '#'):
+            curr_epoch += 1
+            curr_time = line.split('\n')[0][1:].split('\t')[0]
+            times_byepoch.append(float(curr_time))
+            curr_popscheme = line.split('\n')[0][1:].split('\t')[1]
+            pop_sizes = [int(x) for x in curr_popscheme.split(',')]    # Num of samples per population in the observed data
+            sample_scheme_byepoch.append(pop_sizes)
+        else:
+            curr_mm = [float(f) for f in line.split('\n')[0].split('\t')]
+            if(curr_epoch not in migmats_byepoch.keys()):
+                migmats_byepoch[curr_epoch] = []
+            migmats_byepoch[curr_epoch].append(curr_mm)
+    # pop sizes
+    N_base = 1e4    # Number of diploids in the population
+    
+    for e in range(len(sample_scheme_byepoch)):
+        Ne0 = np.ones(len(sample_scheme_byepoch[e]))*N_base
+        theta_true.append([times_byepoch[e],[Ne0,np.array(migmats_byepoch[e])]])
+
+    return theta_true,sample_scheme_byepoch
+
+
 #theta: the list of epochs that we want to simulate. Each entry is equal to one epoch; each entry has:
 #  0: Starting time of the epoch
 #  1: List with two items: Total Population size at start of epoch, and migration matrix
@@ -142,7 +178,8 @@ def run_msprime_tskit(theta,sample_nums,L,r,mu,R):
     ts_replicates = None
     
     Np = len(sample_nums)
-#     print('samples to be drawn for populations: {0}'.format(sample_nums))
+    # print('samples to be drawn for populations: {0}'.format(sample_nums))
+    # print([[sample_nums[i], theta[0][1][0][i]] for i in range(Np)])
     init_pop_configs = [ms.PopulationConfiguration(sample_size=sample_nums[i], initial_size=theta[0][1][0][i]) for i in range(Np)]
     
     init_mig = theta[0][1][1]
@@ -494,6 +531,7 @@ def thetas_toskip(theta):
     for epoch in range(len(theta)):
         curr_theta = theta[:epoch+1]
         if(set([all(x == 0) for x in curr_theta[-1][1][1]]) == {True}):
+        # if(set(curr_theta[-1][1][1]) == {0}):
             bad_theta_nums.append(epoch)
     return bad_theta_nums
 
@@ -516,14 +554,15 @@ def run_pheno_simulation_multipops(theta,seq_len,reps,pop_schemes,r,mu,outname,b
     causalpos_byepoch = []
     epochs_toskip = thetas_toskip(theta)
     for epoch in range(len(theta)):
-        print('Starting epoch {0} replicates'.format(epoch+1))
+        print('Starting epoch {0} replicates'.format(epoch))
 
         pop_sizes = [(i*2) for i in pop_schemes[epoch]] # Num individuals simulated, equal to twice the number of individuals, since each person is diploid
         sample_scheme = [i for i in pop_schemes[epoch]] # Num samples drawn from each pop for likelihood
         full_sampsize = sum(sample_scheme)
-
+        # print(pop_sizes,sample_scheme)
         genotype_index_bypops = assign_genotype_index_multipop(sample_scheme,pop_sizes) #randomly take the <samp_size> number of genomes simulated, and randomly assign to each individual 2 of them
         genotype_index_byinds = get_ind_genoindex_multipop(genotype_index_bypops)
+        # print(genotype_index_byinds)
         causalgenotypes_byrep = {x:[] for x in range(reps)}
         causalpositions_byrep = {x:0 for x in range(reps)}
         fullgenotypes_byrep = {x:[] for x in range(reps)}
@@ -620,7 +659,9 @@ if __name__ == "__main__":
         write_genovcf(genos_byinds,cpos_geno_byind,'{0}.geno'.format(args.out_name),int(args.num_individuals),int(args.seq_len),window)
     else:
         
-        theta,sample_schemes = read_input_file(args.input_file)
+        # theta,sample_schemes = read_input_file(args.input_file)
+        theta,sample_schemes = read_input_file_full(args.input_file)
+        # print(sample_schemes)
         popdicts_by_epoch = {}
         epochs_toskip = thetas_toskip(theta)
         for ep,sampsch in enumerate(sample_schemes):
