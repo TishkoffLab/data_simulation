@@ -147,25 +147,31 @@ def read_input_file_full(filename):
     curr_epoch = -1
     migmats_byepoch = {}
     times_byepoch = []
+    curr_epochtype = ''
+    massmigs_byepoch = {}
+    demoevs_byepoch = {}
     for line in infile:
         if(line[0] == '#'):
             curr_epoch += 1
-            curr_time = line.split('\n')[0][1:].split('\t')[0]
+            cline = line.split('\n')[0][1:].split('\t')
+            curr_epochtype = cline[0]
+            curr_time = cline[1]
             times_byepoch.append(float(curr_time))
-            curr_popscheme = line.split('\n')[0][1:].split('\t')[1]
+            curr_popscheme = cline[2]
             pop_sizes = [int(x) for x in curr_popscheme.split(',')]    # Num of samples per population in the observed data
             sample_scheme_byepoch.append(pop_sizes)
+            
         else:
             curr_mm = [float(f) for f in line.split('\n')[0].split('\t')]
-            if(curr_epoch not in migmats_byepoch.keys()):
-                migmats_byepoch[curr_epoch] = []
-            migmats_byepoch[curr_epoch].append(curr_mm)
+            if(curr_epoch not in demoevs_byepoch.keys()):
+                demoevs_byepoch[curr_epoch] = [curr_epochtype]
+            demoevs_byepoch[curr_epoch].append(curr_mm)
     # pop sizes
     N_base = 1e4    # Number of diploids in the population
     
     for e in range(len(sample_scheme_byepoch)):
         Ne0 = np.ones(len(sample_scheme_byepoch[e]))*N_base
-        theta_true.append([times_byepoch[e],[Ne0,np.array(migmats_byepoch[e])]])
+        theta_true.append([demoevs_byepoch[e][0],times_byepoch[e],[Ne0,np.array(demoevs_byepoch[e][1:])]])
 
     return theta_true,sample_scheme_byepoch
 
@@ -181,33 +187,44 @@ def read_input_file_full(filename):
 #R: Number of replicates; msprime will run R simulations and return an iterator over all trees created
 #Updated: Return list of ts_replicates; each entry will be the simulations for each epoch
 def run_msprime_tskit(theta,sample_nums,L,r,mu,R):
-    ts_rep_list = []
     ts_replicates = None
     
     Np = len(sample_nums)
-    # print('samples to be drawn for populations: {0}'.format(sample_nums))
-    # print([[sample_nums[i], theta[0][1][0][i]] for i in range(Np)])
-    init_pop_configs = [ms.PopulationConfiguration(sample_size=sample_nums[i], initial_size=theta[0][1][0][i]) for i in range(Np)]
-    
-    init_mig = theta[0][1][1]
-    
+#     print('samples to be drawn for populations: {0}'.format(sample_nums))
+    init_pop_configs = [ms.PopulationConfiguration(sample_size=sample_nums[i], initial_size=theta[0][2][0][i]) for i in range(Np)]
+
+    if(theta[0][0] == 'mrate'):
+        init_mig = theta[0][2][1]
+    elif(theta[0][0] == 'mass'):
+        init_mig = None
+        init_demoevents = []
+        for m in theta[0][2][1]:
+            init_demoevents.append(ms.MassMigration(time=0, source=m[0], destination=m[1], proportion=m[2]))
     K = len(theta)  # K = number of epochs
     if K > 1:
         # There is more than one epoch, so must set the non-initial epochs as demographic events
         demo_events = []
         for k in range(1,K):
-            t_k,theta_k = theta[k]
+            theta_type,t_k,theta_k = theta[k]
             Ne = theta_k[0]
-            mig = theta_k[1]
-            for i in range(Np):
-                # Set the Ne
-                demo_events.append(ms.PopulationParametersChange(population=i,time=t_k,initial_size=Ne[i]))
+            if(theta_type == 'mrate'):
+                mig = theta_k[1]
+                for i in range(Np):
+                    # Set the Ne
+                    demo_events.append(ms.PopulationParametersChange(population=i,time=t_k,initial_size=Ne[i]))
 
-                # Set the migration rates
-                for j in range(Np):
-                    if j!=i:
-                        demo_events.append(ms.MigrationRateChange(time=t_k,rate=mig[i,j],matrix_index=tuple([i,j])))
-
+                    # Set the migration rates
+                    for j in range(Np):
+                        if j!=i:
+                            demo_events.append(ms.MigrationRateChange(time=t_k,rate=mig[i,j],matrix_index=tuple([i,j])))
+            elif(theta_type == 'mass'):
+                massmig = theta_k[1]
+                for m in massmig:
+                    demo_events.append(ms.MassMigration(time=t_k, source=m[0], destination=m[1], proportion=m[2]))
+            else:
+                print('Epoch events should only be "mass" or "mrate"!')
+                return -1
+#         print(init_pop_configs)
         ts_replicates = ms.simulate(
             length=L,
             recombination_rate=r,
@@ -218,15 +235,25 @@ def run_msprime_tskit(theta,sample_nums,L,r,mu,R):
             mutation_rate = mu
         )
     else:
+        print('there is only one epoch, starting now using theta {0}'.format(theta))
         # There is only the initial epoch. 
-        ts_replicates = ms.simulate(
+        if(init_mig is None): #If the first epoch event is a mass migration event, then there's no migration matrix to provide
+            ts_replicates = ms.simulate(
             length=L,
             recombination_rate=r,
             population_configurations=init_pop_configs,
-            migration_matrix = init_mig,
+            demographic_events = init_demoevents,
             num_replicates=R,
-            mutation_rate = mu
-        )
+            mutation_rate = mu)
+        else:
+            ts_replicates = ms.simulate(
+                length=L,
+                recombination_rate=r,
+                population_configurations=init_pop_configs,
+                migration_matrix = init_mig,
+                num_replicates=R,
+                mutation_rate = mu
+            )
     return ts_replicates
 
 #Given a list of indexes to draw from and a number of individuals to draw, returns a randomly assigned list of 2 indexes per person
@@ -537,8 +564,9 @@ def thetas_toskip(theta):
     bad_theta_nums = []
     for epoch in range(len(theta)):
         curr_theta = theta[:epoch+1]
-        if(set([all(x == 0) for x in curr_theta[-1][1][1]]) == {True}):
-        # if(set(curr_theta[-1][1][1]) == {0}):
+        if(curr_theta[-1][0] == 'mass'):
+            bad_theta_nums.append(epoch)
+        elif(set([all(x == 0) for x in curr_theta[-1][2][1]]) == {True}):
             bad_theta_nums.append(epoch)
     return bad_theta_nums
 
