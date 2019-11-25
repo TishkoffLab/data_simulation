@@ -50,22 +50,31 @@ The potential input flags are:
 
 The input file that contains the epoch specifications are formatted as follows:
 
-Per epoch;
-#<Start time of epoch>	<population sizes for each population, seperated by commas>
-<NxN migration matrix, where N is the number of populations>
+Per epoch, you need:
 
+#<type of event>\t<Start time of epoch>\t<population sizes for each population, seperated by commas>
+Followed by (for "mrate" events):
+```
+<NxN migration matrix, where N is the number of populations>
+```
+or, for "mass" events; one per migration event at the given time:
+```
+<source population>\t<destination population>\t<proportion of source pop migrating> 
+```
 Here is an example of the input file:
 ```
-#0      4,4,4
-0       1e-4    1e-2
-1e-4    0       1e-3
-1e-2    1e-3    0
-#1000   4,7,7
-0       0       0
-0       0       0
-0       0       0
+#mass   10000   4,7,7   
+0       1       0.75
+2       1       0.5
+1       0       0.005
+#mrate  100000  4,3,2
+0       1e-7    1e-7
+1e-7    0       1e-7
+1e-7    1e-7    0
+
 ```
 
+The type of event for the epoch is either "mass" (for a Mass Migration event) or "mrate" for a change in the migration rate for that epoch.
 
 
 The output is two files per epoch: 
@@ -75,3 +84,15 @@ The output is two files per epoch:
 ```
 
 For the VCF file, each variant entry corrisponds to a single mutation generated in the course of a simulation  
+
+
+Here is an example of using the script:
+
+```
+python generate_simulated_phenogeno.py -r 50 -l 1000 -w 1000 -f testing/test_inputfile.migration_events -m 2e-8 -c 1e-7 -o testing/test_massmig_input
+```
+
+
+
+
+
