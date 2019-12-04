@@ -136,29 +136,39 @@ def read_input_file_full(filename):
     curr_epochtype = ''
     massmigs_byepoch = {}
     demoevs_byepoch = {}
+    ooafrica_sampscheme = []
     for line in infile:
         if(line[0] == '#'):
             curr_epoch += 1
             cline = line.split('\n')[0][1:].split('\t')
             curr_epochtype = cline[0]
-            curr_time = cline[1]
-            times_byepoch.append(float(curr_time))
-            curr_popscheme = cline[2]
-            pop_sizes = [int(x) for x in curr_popscheme.split(',')]    # Num of samples per population in the observed data
-            sample_scheme_byepoch.append(pop_sizes)
-            
+            if(curr_epochtype == 'ooafrica'):
+                curr_popscheme = cline[1]
+                curr_epoch -= 1
+                ooafrica_sampscheme = [int(x) for x in curr_popscheme.split(',')]    # Num of samples per population in the observed data
+                # sample_scheme_byepoch.append(ooafrica_sampscheme)
+            else:
+                curr_time = cline[1]
+                times_byepoch.append(float(curr_time))
+                curr_popscheme = cline[2]
+                pop_sizes = [int(x) for x in curr_popscheme.split(',')]    # Num of samples per population in the observed data
+                sample_scheme_byepoch.append(pop_sizes)
         else:
             curr_mm = [float(f) for f in line.split('\n')[0].split('\t')]
             if(curr_epoch not in demoevs_byepoch.keys()):
                 demoevs_byepoch[curr_epoch] = [curr_epochtype]
             demoevs_byepoch[curr_epoch].append(curr_mm)
+
+#     if(args.ooafrica):
+    
     # pop sizes
     N_base = 12300    # Number of diploids in the population; based on the N_AF from the tutorial Out_Of_Africa model
-    
     for e in range(len(sample_scheme_byepoch)):
         Ne0 = np.ones(len(sample_scheme_byepoch[e]))*N_base
         theta_true.append([demoevs_byepoch[e][0],times_byepoch[e],[Ne0,np.array(demoevs_byepoch[e][1:])]])
-
+    if(args.ooafrica):
+        theta_true.insert(0,['ooafrica',ooafrica_sampscheme,[]])
+        sample_scheme_byepoch.insert(0,ooafrica_sampscheme)
     return theta_true,sample_scheme_byepoch
 
 #Runs the msprime simulate function, taking into account the 
@@ -179,49 +189,64 @@ def run_msprime_tskit(theta,sample_nums,L,r,mu,R,outname=None,outname_epoch=None
 #     print('samples to be drawn for populations: {0}'.format(sample_nums))
     # if(args.ooafrica):
     #     init_pop_configs, init_mig, init_demoevents = outofafrica_model_parameters()
-    init_pop_configs = [ms.PopulationConfiguration(sample_size=sample_nums[i], initial_size=theta[0][2][0][i]) for i in range(Np)]
-    demo_events = None
-    init_demoevents = []
-    if(theta[0][0] == 'mrate'):
-        init_mig = theta[0][2][1]
-    elif(theta[0][0] == 'mass'):
-        init_mig = None
-        for m in theta[0][2][1]:
-            init_demoevents.append(ms.MassMigration(time=theta[0][1], source=m[0], destination=m[1], proportion=m[2]))
+    demo_events = []
+
+    if(theta[0][0] == 'ooafrica'):
+        init_pop_configs, init_mig, demo_events = outofafrica_model_parameters(sample_nums)
+    else:
+        init_pop_configs = [ms.PopulationConfiguration(sample_size=sample_nums[i], initial_size=theta[0][2][0][i]) for i in range(Np)]
+        
+        if(theta[0][0] == 'mrate'):
+            init_mig = theta[0][2][1]
+        elif(theta[0][0] == 'mass'):
+            init_mig = None
+            for m in theta[0][2][1]:
+                demo_events.append(ms.MassMigration(time=theta[0][1], source=m[0], destination=m[1], proportion=m[2]))
     # if(args.ooafrica):
     #     ooa_pop_configs, ooa_mig, ooa_demoevents = outofafrica_model_parameters()
     #     for d in ooa_demoevents:
     #         init_demoevents.append(d)
     K = len(theta)  # K = number of epochs
+    print(theta)
     if K > 1:
         # There is more than one epoch, so must set the non-initial epochs as demographic events
-        demo_events = []
+        # demo_events = []
+        demoevents_times = []
         for k in range(1,K):
             theta_type,t_k,theta_k = theta[k]
-            Ne = theta_k[0]
+
             if(theta_type == 'mrate'):
+                Ne = theta_k[0]
                 mig = theta_k[1]
                 for i in range(Np):
                     # Set the Ne
-                    demo_events.append(ms.PopulationParametersChange(population=i,time=t_k,initial_size=Ne[i]))
-                    print('matrix to add: {0}'.format(mig))
-
+                    if(args.ooafrica and t_k <= 920):
+                        demo_events.insert(0,ms.PopulationParametersChange(population=i,time=t_k,initial_size=Ne[i]))
+                    else:
+                        demo_events.append(ms.PopulationParametersChange(population=i,time=t_k,initial_size=Ne[i]))
                     # Set the migration rates
                     for j in range(Np):
                         if j!=i:
-                            demo_events.append(ms.MigrationRateChange(time=t_k,rate=mig[i,j],matrix_index=tuple([i,j])))
+                            if(args.ooafrica and t_k <= 920):
+                                demo_events.insert(0,ms.MigrationRateChange(time=t_k,rate=mig[i,j],matrix_index=tuple([i,j])))
+                            else:
+                                demo_events.append(ms.MigrationRateChange(time=t_k,rate=mig[i,j],matrix_index=tuple([i,j])))
             elif(theta_type == 'mass'):
+                Ne = theta_k[0]
                 massmig = theta_k[1]
                 for m in massmig:
-                    demo_events.append(ms.MassMigration(time=t_k, source=m[0], destination=m[1], proportion=m[2]))
+                    if(args.ooafrica and t_k <= 920):
+                        demo_events.insert(0,ms.MassMigration(time=t_k, source=m[0], destination=m[1], proportion=m[2]))
+                    else:
+                        demo_events.append(ms.MassMigration(time=t_k, source=m[0], destination=m[1], proportion=m[2]))
+            elif(theta_type == 'ooafrica'):
+                ooa_pop_configs, ooa_mig, ooa_demoevents = outofafrica_model_parameters(theta[k][1])
+                for d in ooa_demoevents:
+                    demo_events.append(d)
             else:
                 print('Epoch events should only be "mass" or "mrate"!')
                 return -1
-        if(args.ooafrica):
-            ooa_pop_configs, ooa_mig, ooa_demoevents = outofafrica_model_parameters()
-            for d in ooa_demoevents:
-                demo_events.append(d)
-#         print(init_pop_configs)
+        print(demo_events)
         ts_replicates = ms.simulate(
             length=L,
             recombination_rate=r,
@@ -233,29 +258,29 @@ def run_msprime_tskit(theta,sample_nums,L,r,mu,R,outname=None,outname_epoch=None
         )
     else:
         print('there is only one epoch, starting now using theta {0}'.format(theta))
-        if(args.ooafrica):
-            ooa_pop_configs, ooa_mig, ooa_demoevents = outofafrica_model_parameters()
-            for d in ooa_demoevents:
-                print(d)
-                init_demoevents.append(d)
-            if(init_mig is None): #The only event provided is a mass migration event, and the user specifies the out-of-africa flag, we can use that migration matrix as the initial migration matrix
-                init_mig = ooa_mig 
+        # if(args.ooafrica):
+        #     ooa_pop_configs, ooa_mig, ooa_demoevents = outofafrica_model_parameters()
+        #     for d in ooa_demoevents:
+        #         print(d)
+        #         init_demoevents.append(d)
+        #     if(init_mig is None): #The only event provided is a mass migration event, and the user specifies the out-of-africa flag, we can use that migration matrix as the initial migration matrix
+        #         init_mig = ooa_mig 
         # There is only the initial epoch. 
         if(init_mig is None): #If the first epoch event is a mass migration event, and the out-of-africa is not provided, then there's no migration matrix to provide
             ts_replicates = ms.simulate(
             length=L,
             recombination_rate=r,
             population_configurations=init_pop_configs,
-            demographic_events = init_demoevents,
+            demographic_events = demo_events,
             num_replicates=R,
             mutation_rate = mu)
         else:
-            if(len(init_demoevents) > 0):
+            if(len(demo_events) > 0):
                 ts_replicates = ms.simulate(
                 length=L,
                 recombination_rate=r,
                 population_configurations=init_pop_configs,
-                demographic_events = init_demoevents,
+                demographic_events = demo_events,
                 migration_matrix = init_mig,
                 num_replicates=R,
                 mutation_rate = mu)
@@ -273,18 +298,6 @@ def run_msprime_tskit(theta,sample_nums,L,r,mu,R,outname=None,outname_epoch=None
             population_configurations=init_pop_configs,
             migration_matrix=init_mig,
             demographic_events=demo_events)
-        if(outname == None):
-            print('Demography History for epoch {0}'.format(K))
-            dp.print_history(output=sys.stderr)
-        else:
-            outfile = open('{0}.epoch{1}.demohistory'.format(outname,K),'w')
-            dp.print_history(output=outfile)
-            outfile.close()
-    elif(init_demoevents != None):
-        dp = ms.DemographyDebugger(
-            population_configurations=init_pop_configs,
-            migration_matrix=init_mig,
-            demographic_events=init_demoevents)
         if(outname == None):
             print('Demography History for epoch {0}'.format(outname_epoch))
             dp.print_history(output=sys.stderr)
@@ -603,6 +616,8 @@ def thetas_toskip(theta):
     bad_theta_nums = []
     for epoch in range(len(theta)):
         curr_theta = theta[:epoch+1]
+        if(curr_theta[-1][0] == 'ooafrica'):
+            continue
         if(curr_theta[-1][0] == 'mass' and args.ooafrica == False):
             bad_theta_nums.append(epoch)
         elif(set([all(x == 0) for x in curr_theta[-1][2][1]]) == {True}):
@@ -633,7 +648,7 @@ def run_pheno_simulation_multipops(theta,seq_len,reps,pop_schemes,r,mu,outname,b
         pop_sizes = [(i*2) for i in pop_schemes[epoch]] # Num individuals simulated, equal to twice the number of individuals, since each person is diploid
         sample_scheme = [i for i in pop_schemes[epoch]] # Num samples drawn from each pop for likelihood
         full_sampsize = sum(sample_scheme)
-        # print(pop_sizes,sample_scheme)
+        print(pop_sizes,sample_scheme)
         genotype_index_bypops = assign_genotype_index_multipop(sample_scheme,pop_sizes) #randomly take the <samp_size> number of genomes simulated, and randomly assign to each individual 2 of them
         genotype_index_byinds = get_ind_genoindex_multipop(genotype_index_bypops)
         # print(genotype_index_byinds)
@@ -679,7 +694,8 @@ def run_pheno_simulation_multipops(theta,seq_len,reps,pop_schemes,r,mu,outname,b
                 try:
                     curr_rep_genotypes.append((curr_causal_var[index[0]],curr_causal_var[index[1]]))
                 except:
-                    print(indiv,index,len(curr_causal_var))
+                    print('error getting the causal genotypes')
+                    # print(indiv,index,len(curr_causal_var))
             causalgenotypes_byrep[rep] = [curr_causal_pos,curr_rep_genotypes]
 
             curr_rep_fullgenos = {}
@@ -689,7 +705,8 @@ def run_pheno_simulation_multipops(theta,seq_len,reps,pop_schemes,r,mu,outname,b
                     try:
                         temp_fullgeno.append((geno[index[0]],geno[index[1]]))
                     except:
-                        print(rep,indiv,index,len(geno))
+                        print('error getting the full genotypes')
+                        # print(rep,indiv,index,len(geno))
                 curr_rep_fullgenos[pos] = temp_fullgeno
             fullgenotypes_byrep[rep] = curr_rep_fullgenos
 
@@ -716,10 +733,8 @@ def run_pheno_simulation_multipops(theta,seq_len,reps,pop_schemes,r,mu,outname,b
 
 #This function sets up the out_of_africa model, outlined in the msprime tutorial and expanded by user "slowkoni" on github, from the Gravel 2011 paper
 #these values will be used to initialize a simulation so that additional user-definied events can simulated in more recent times
-def outofafrica_model_parameters():
+def outofafrica_model_parameters(n_samples):
     generation_time = 25
-
-    n_samples = [10,10,10]
 
     m_AF_B = 15e-5
     m_AF_EU = 2.5e-5
