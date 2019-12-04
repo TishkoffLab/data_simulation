@@ -40,7 +40,10 @@ parser.add_argument("-m", "--mutrate", dest="mutation_rate",
                     help="rate of mutation to use for simulation.")
 parser.add_argument("-c", "--recombrate", dest="recombination_rate",
                     help="rate of recombination to use for simulation.")
-
+parser.add_argument("-p", "--phenotype", dest="make_phenotype",action='store_true',
+                    help="provide this flag if you want the script to generate a phenotype file")
+parser.add_argument("-a", "--outofafrica", dest="ooafrica",action='store_true',
+                    help="provide this flag if you want the script to use the outofafrica_model_parameters function as the initial demographic events")
 
 # assign_genotype_index((num_individuals*num_pops),(num_individuals*num_pops)*2)
 #Take the genotypes that are simulated, and assign two of the indexes to each individual.
@@ -74,23 +77,6 @@ def assign_genotype_index_multipop(samp_sizes,pop_sizes):
         prev_indstart += p
     return ind_haps_dict_bypop
 
-#Reads in a migration matrix file. File format is #<epoch_num>, followed by a number of lines equal to the population number with the migration value of that 
-#population against all others (must have zeros along axis); for each epoch
-#    filename (string): name of the migration matrix file. Should be equal to <input_file>.migration_matrix, in the same folder as the <input_file>.epoch file
-#    num_epochs (int): number of epochs
-#Returns migmats_byepoch: a list of matrices, one matrix per epoch
-def read_input_migrationmatrix(filename,num_epochs):
-    mfile = open(filename,'r')
-    migmats_byepoch = [[] for x in range(num_epochs)]
-    for line in mfile:
-        if(line[0] == '#'):
-            curr_migmat = int(line[1])
-        else:
-            curr_mm = np.array([float(f) for f in line.split('\n')[0].split('\t')])
-            migmats_byepoch[curr_migmat].append(curr_mm)
-    mfile.close()
-    return migmats_byepoch
-
 #Reads in a file that has the epochs that we want to simulate. The file needs to be in a tab-seperated file, with a header.
 #The file needs to be named <filename>.epochs
 #Each line after the header represents 1 epoch. Necessary columns include:
@@ -117,7 +103,7 @@ def read_input_file(filename):
 
         # pop sizes
         if(migmat_fromfile is None):
-            N_base = 1e4    # Number of diploids in the population
+            N_base = 12300    # Number of diploids in the population; based on the N_AF from the tutorial Out_Of_Africa model
             Ne0 = np.ones(Np)*N_base
             # Set migration rates
             M_base = float(t['migration_rate'])
@@ -167,7 +153,7 @@ def read_input_file_full(filename):
                 demoevs_byepoch[curr_epoch] = [curr_epochtype]
             demoevs_byepoch[curr_epoch].append(curr_mm)
     # pop sizes
-    N_base = 1e4    # Number of diploids in the population
+    N_base = 12300    # Number of diploids in the population; based on the N_AF from the tutorial Out_Of_Africa model
     
     for e in range(len(sample_scheme_byepoch)):
         Ne0 = np.ones(len(sample_scheme_byepoch[e]))*N_base
@@ -186,20 +172,26 @@ def read_input_file_full(filename):
 #mu: Mutation rate, constant accross all populations
 #R: Number of replicates; msprime will run R simulations and return an iterator over all trees created
 #Updated: Return list of ts_replicates; each entry will be the simulations for each epoch
-def run_msprime_tskit(theta,sample_nums,L,r,mu,R):
+def run_msprime_tskit(theta,sample_nums,L,r,mu,R,outname=None,outname_epoch=None):
     ts_replicates = None
     
     Np = len(sample_nums)
 #     print('samples to be drawn for populations: {0}'.format(sample_nums))
+    # if(args.ooafrica):
+    #     init_pop_configs, init_mig, init_demoevents = outofafrica_model_parameters()
     init_pop_configs = [ms.PopulationConfiguration(sample_size=sample_nums[i], initial_size=theta[0][2][0][i]) for i in range(Np)]
-
+    demo_events = None
+    init_demoevents = []
     if(theta[0][0] == 'mrate'):
         init_mig = theta[0][2][1]
     elif(theta[0][0] == 'mass'):
         init_mig = None
-        init_demoevents = []
         for m in theta[0][2][1]:
-            init_demoevents.append(ms.MassMigration(time=0, source=m[0], destination=m[1], proportion=m[2]))
+            init_demoevents.append(ms.MassMigration(time=theta[0][1], source=m[0], destination=m[1], proportion=m[2]))
+    # if(args.ooafrica):
+    #     ooa_pop_configs, ooa_mig, ooa_demoevents = outofafrica_model_parameters()
+    #     for d in ooa_demoevents:
+    #         init_demoevents.append(d)
     K = len(theta)  # K = number of epochs
     if K > 1:
         # There is more than one epoch, so must set the non-initial epochs as demographic events
@@ -212,6 +204,7 @@ def run_msprime_tskit(theta,sample_nums,L,r,mu,R):
                 for i in range(Np):
                     # Set the Ne
                     demo_events.append(ms.PopulationParametersChange(population=i,time=t_k,initial_size=Ne[i]))
+                    print('matrix to add: {0}'.format(mig))
 
                     # Set the migration rates
                     for j in range(Np):
@@ -224,6 +217,10 @@ def run_msprime_tskit(theta,sample_nums,L,r,mu,R):
             else:
                 print('Epoch events should only be "mass" or "mrate"!')
                 return -1
+        if(args.ooafrica):
+            ooa_pop_configs, ooa_mig, ooa_demoevents = outofafrica_model_parameters()
+            for d in ooa_demoevents:
+                demo_events.append(d)
 #         print(init_pop_configs)
         ts_replicates = ms.simulate(
             length=L,
@@ -236,8 +233,15 @@ def run_msprime_tskit(theta,sample_nums,L,r,mu,R):
         )
     else:
         print('there is only one epoch, starting now using theta {0}'.format(theta))
+        if(args.ooafrica):
+            ooa_pop_configs, ooa_mig, ooa_demoevents = outofafrica_model_parameters()
+            for d in ooa_demoevents:
+                print(d)
+                init_demoevents.append(d)
+            if(init_mig is None): #The only event provided is a mass migration event, and the user specifies the out-of-africa flag, we can use that migration matrix as the initial migration matrix
+                init_mig = ooa_mig 
         # There is only the initial epoch. 
-        if(init_mig is None): #If the first epoch event is a mass migration event, then there's no migration matrix to provide
+        if(init_mig is None): #If the first epoch event is a mass migration event, and the out-of-africa is not provided, then there's no migration matrix to provide
             ts_replicates = ms.simulate(
             length=L,
             recombination_rate=r,
@@ -246,15 +250,50 @@ def run_msprime_tskit(theta,sample_nums,L,r,mu,R):
             num_replicates=R,
             mutation_rate = mu)
         else:
-            ts_replicates = ms.simulate(
+            if(len(init_demoevents) > 0):
+                ts_replicates = ms.simulate(
                 length=L,
                 recombination_rate=r,
                 population_configurations=init_pop_configs,
+                demographic_events = init_demoevents,
                 migration_matrix = init_mig,
                 num_replicates=R,
-                mutation_rate = mu
-            )
+                mutation_rate = mu)
+            else:
+                ts_replicates = ms.simulate(
+                    length=L,
+                    recombination_rate=r,
+                    population_configurations=init_pop_configs,
+                    migration_matrix = init_mig,
+                    num_replicates=R,
+                    mutation_rate = mu
+                )
+    if(demo_events != None):
+        dp = ms.DemographyDebugger(
+            population_configurations=init_pop_configs,
+            migration_matrix=init_mig,
+            demographic_events=demo_events)
+        if(outname == None):
+            print('Demography History for epoch {0}'.format(K))
+            dp.print_history(output=sys.stderr)
+        else:
+            outfile = open('{0}.epoch{1}.demohistory'.format(outname,K),'w')
+            dp.print_history(output=outfile)
+            outfile.close()
+    elif(init_demoevents != None):
+        dp = ms.DemographyDebugger(
+            population_configurations=init_pop_configs,
+            migration_matrix=init_mig,
+            demographic_events=init_demoevents)
+        if(outname == None):
+            print('Demography History for epoch {0}'.format(outname_epoch))
+            dp.print_history(output=sys.stderr)
+        else:
+            outfile = open('{0}.epoch{1}.demohistory'.format(outname,outname_epoch),'w')
+            dp.print_history(output=outfile)
+            outfile.close()
     return ts_replicates
+
 
 #Given a list of indexes to draw from and a number of individuals to draw, returns a randomly assigned list of 2 indexes per person
 #This is used to create the haplotypes from single population
@@ -510,9 +549,9 @@ def write_genovcf(full_geno_dict,causal_pos_dict,outname,seq_len,window_spacer=1
                 curr_pos = (int(rep)*(window_spacer+seq_len))+pos
                 if(pos == causal_pos_dict[rep]):
                     is_rep_causalsnp = True
-                    vcf_file.write('{0}\t{1}\t.\tA\tG\t.\tPASS\tCS\tGT\t'.format(rep,curr_pos))
+                    vcf_file.write('{0}\t{1}\t.\tA\tG\t.\tPASS\tCS\tGT\t'.format(chrm_touse,curr_pos))
                 else:
-                    vcf_file.write('{0}\t{1}\t.\tA\tG\t.\tPASS\t.\tGT\t'.format(rep,curr_pos))
+                    vcf_file.write('{0}\t{1}\t.\tA\tG\t.\tPASS\t.\tGT\t'.format(chrm_touse,curr_pos))
                 for g in genos:
                     vcf_file.write('{0}|{1}\t'.format(g[0],g[1]))
                 vcf_file.write('\n')
@@ -564,7 +603,7 @@ def thetas_toskip(theta):
     bad_theta_nums = []
     for epoch in range(len(theta)):
         curr_theta = theta[:epoch+1]
-        if(curr_theta[-1][0] == 'mass'):
+        if(curr_theta[-1][0] == 'mass' and args.ooafrica == False):
             bad_theta_nums.append(epoch)
         elif(set([all(x == 0) for x in curr_theta[-1][2][1]]) == {True}):
             bad_theta_nums.append(epoch)
@@ -604,11 +643,12 @@ def run_pheno_simulation_multipops(theta,seq_len,reps,pop_schemes,r,mu,outname,b
 
 
         curr_theta = theta[:epoch+1]
+        print('curr_theta = {0}'.format(curr_theta))
         if(epoch in epochs_toskip):
             print('Epoch {0} has no migration, skipping this epoch due to memory constraints'.format(epoch))
             continue
         # print('epoch {0} theta = {1}'.format(epoch,curr_theta))
-        tsreps = run_msprime_tskit(curr_theta,pop_sizes,seq_len,r,mu,reps)
+        tsreps = run_msprime_tskit(curr_theta,pop_sizes,seq_len,r,mu,reps,outname,epoch)
         # pdb.set_trace()
         print('replicate trees created; iterating through genotypes now')
 
@@ -658,20 +698,110 @@ def run_pheno_simulation_multipops(theta,seq_len,reps,pop_schemes,r,mu,outname,b
         for pos,genos in causalgenotypes_byrep.items():
             for num,g in enumerate(genos[1]):
                 causalgenotypes_byind[num].append(g)
-
-        beta = 'normal'
-        phenotypes_byinds = {x:0 for x in range(full_sampsize)}
-        beta_list = generate_betas(num_inds=reps,dist_type=beta)
-        for i in range(full_sampsize):
-            # curr_beta = beta_list[i]
-            phenotypes_byinds[i] = estimate_pheno(causalgenotypes_byind[i],beta_list)
-        # phenos_byepoch.append(phenotypes_byinds)
-        write_phenofile('{0}.epoch{1}'.format(outname,epoch),phenotypes_byinds)
+        if(args.make_phenotype):
+            beta = 'normal'
+            phenotypes_byinds = {x:0 for x in range(full_sampsize)}
+            beta_list = generate_betas(num_inds=reps,dist_type=beta)
+            for i in range(full_sampsize):
+                # curr_beta = beta_list[i]
+                phenotypes_byinds[i] = estimate_pheno(causalgenotypes_byind[i],beta_list)
+            # phenos_byepoch.append(phenotypes_byinds)
+            write_phenofile('{0}.epoch{1}'.format(outname,epoch),phenotypes_byinds)
         
         genos_byepoch.append(fullgenotypes_byrep)
         causalpos_byepoch.append(causalpositions_byrep)
     
     return causalpos_byepoch,genos_byepoch
+
+
+#This function sets up the out_of_africa model, outlined in the msprime tutorial and expanded by user "slowkoni" on github, from the Gravel 2011 paper
+#these values will be used to initialize a simulation so that additional user-definied events can simulated in more recent times
+def outofafrica_model_parameters():
+    generation_time = 25
+
+    n_samples = [10,10,10]
+
+    m_AF_B = 15e-5
+    m_AF_EU = 2.5e-5
+    m_AF_AS = 0.78e-5
+    m_EU_AS = 3.11e-5
+
+    N_A = 7300 #ancestral_size 
+    N_AF = 14474 #africa_size 
+    N_EU0 = 1032 #out-to-europe-size
+    N_AS0 = 550 #out-to-asia-size
+    N_AF_B = 1861 #out-of-africa-size
+
+    T_B = 51000 #merge-to-africa time
+    T_EuAs = 23000 #merge-europe-asia-time
+    T_AF = 148000 #africa-expansion-time
+
+    asia_growth_rate = 0.38 
+    europe_growth_rate = 0.48
+
+     # Calculate the final sizes, or in coalescent terms, the starting sizes, of the
+    # Europe and East Asia populations which under the Gravel et al. 2011 out of africa
+    # model experience exponential growth after diverging from each other going
+    # separate ways in the world. Command line accepts values in percentages as given in
+    # the Gravel et al. paper. We just need to know the starting effective size, starting
+    # as in the present day effective size, as the simulation goes backward in time.
+    europe_final_size = N_EU0 / math.exp(-(europe_growth_rate/100.) * (T_EuAs/generation_time))
+    asia_final_size = N_AS0 / math.exp(-(asia_growth_rate/100.) * (T_EuAs/generation_time))
+
+    migration_matrix = [
+        [      0, m_AF_EU, m_AF_AS],
+        [m_AF_EU,       0, m_EU_AS],
+        [m_AF_AS, m_EU_AS,       0],
+    ]
+    
+    europe_asia_merge_time = T_EuAs/generation_time
+
+    population_configurations = [
+        ms.PopulationConfiguration(
+            sample_size=n_samples[0], initial_size=N_AF),
+        ms.PopulationConfiguration(
+            sample_size=n_samples[1], initial_size=europe_final_size,
+            growth_rate=europe_growth_rate/100.),
+        ms.PopulationConfiguration(
+            sample_size=n_samples[2], initial_size=asia_final_size,
+            growth_rate=asia_growth_rate/100.)
+    ]
+
+    demographic_events = [
+        # All the next events, until indicated below, are coincident and thus really one
+        # event
+        
+        # The Europe (pop 1) and East Asia (pop 2) populations merge and become population 1
+        ms.MassMigration(
+            time=europe_asia_merge_time, source=2, destination=1, proportion=1.0),
+        # Migration rates must now refelect migration between the original African population
+        # and the merged Europe/East Asian population which are still separate at this point
+        ms.MigrationRateChange(time=europe_asia_merge_time, rate=0),
+        ms.MigrationRateChange(
+            time=europe_asia_merge_time, rate=m_AF_B, matrix_index=(0, 1)),
+        ms.MigrationRateChange(
+            time=europe_asia_merge_time, rate=m_AF_B, matrix_index=(1, 0)),
+        # Finally, the effective size of the merged population (pop 1 now) is different
+        # otherwise it would be whatever the shrinking Europe population size is/was.
+        ms.PopulationParametersChange(
+            time=europe_asia_merge_time, initial_size=N_AF_B,
+            growth_rate=0, population_id=1),
+
+        # Now we are backward further in time
+        # Next, the migrating out of africa population (currently pop 1) joins to the
+        # population of origin (pop 0), the african population
+        ms.MassMigration(
+            time=T_B/generation_time, source=1, destination=0, proportion=1.0),
+
+        # In the final event of the model, the African population (pop 0, the only one left)
+        # reduces in size to the ancestral population size until the MRCA (end of the simulation)
+        ms.PopulationParametersChange(
+            time=T_AF/generation_time,
+            initial_size=N_A, population_id=0)
+    ]
+
+    return(population_configurations, migration_matrix, demographic_events)
+
 
 
 if __name__ == "__main__":
