@@ -125,7 +125,7 @@ def read_input_file(filename):
 #Following the line with the time/population sizes, the migration matrix which is of size NxN, where N=number of populations. The diagonal of the matrix should be zeros.
 #   filename (str): name of the input file to read
 #returns:
-#   theta_true: description can be found in the run_
+#   theta_true: description can be found in the run_msprime_tskit comment
 def read_input_file_full(filename):
     infile = open(filename,'r')
     theta_true = []
@@ -146,7 +146,6 @@ def read_input_file_full(filename):
                 curr_popscheme = cline[1]
                 curr_epoch -= 1
                 ooafrica_sampscheme = [int(x) for x in curr_popscheme.split(',')]    # Num of samples per population in the observed data
-                # sample_scheme_byepoch.append(ooafrica_sampscheme)
             else:
                 curr_time = cline[1]
                 times_byepoch.append(float(curr_time))
@@ -158,14 +157,13 @@ def read_input_file_full(filename):
             if(curr_epoch not in demoevs_byepoch.keys()):
                 demoevs_byepoch[curr_epoch] = [curr_epochtype]
             demoevs_byepoch[curr_epoch].append(curr_mm)
-
-#     if(args.ooafrica):
     
     # pop sizes
-    N_base = 12300    # Number of diploids in the population; based on the N_AF from the tutorial Out_Of_Africa model
+    N_base = 14474    # Number of diploids in the population; based on the N_AF from the tutorial Out_Of_Africa model
     for e in range(len(sample_scheme_byepoch)):
         Ne0 = np.ones(len(sample_scheme_byepoch[e]))*N_base
         theta_true.append([demoevs_byepoch[e][0],times_byepoch[e],[Ne0,np.array(demoevs_byepoch[e][1:])]])
+
     if(args.ooafrica):
         theta_true.insert(0,['ooafrica',ooafrica_sampscheme,[]])
         sample_scheme_byepoch.insert(0,ooafrica_sampscheme)
@@ -184,16 +182,14 @@ def read_input_file_full(filename):
 #Updated: Return list of ts_replicates; each entry will be the simulations for each epoch
 def run_msprime_tskit(theta,sample_nums,L,r,mu,R,outname=None,outname_epoch=None):
     ts_replicates = None
-    
     Np = len(sample_nums)
-#     print('samples to be drawn for populations: {0}'.format(sample_nums))
-    # if(args.ooafrica):
-    #     init_pop_configs, init_mig, init_demoevents = outofafrica_model_parameters()
-    demo_events = []
 
-    if(theta[0][0] == 'ooafrica'):
+    demo_events = [] #This will be a list of demographic events. It must be ordered by time (ascending), or msprime will throw an error
+
+    if(theta[0][0] == 'ooafrica'): #If the user wants the out-of-africa model to be used as the initial events for their simulation(s), the -a flag must be used when calling the script, and
+                                    #the first element in the input file must be ooafrica along with the population sizes to be drawn/recorded in this epoch
         init_pop_configs, init_mig, demo_events = outofafrica_model_parameters(sample_nums)
-    else:
+    else: #If the out-of-africa model is not used, we either are looking at a mrate (migration matrix) or a mass (mass migration) event as the initial epoch
         init_pop_configs = [ms.PopulationConfiguration(sample_size=sample_nums[i], initial_size=theta[0][2][0][i]) for i in range(Np)]
         
         if(theta[0][0] == 'mrate'):
@@ -202,27 +198,20 @@ def run_msprime_tskit(theta,sample_nums,L,r,mu,R,outname=None,outname_epoch=None
             init_mig = None
             for m in theta[0][2][1]:
                 demo_events.append(ms.MassMigration(time=theta[0][1], source=m[0], destination=m[1], proportion=m[2]))
-    # if(args.ooafrica):
-    #     ooa_pop_configs, ooa_mig, ooa_demoevents = outofafrica_model_parameters()
-    #     for d in ooa_demoevents:
-    #         init_demoevents.append(d)
+
     K = len(theta)  # K = number of epochs
-    print(theta)
     if K > 1:
         # There is more than one epoch, so must set the non-initial epochs as demographic events
-        # demo_events = []
-        demoevents_times = []
         for k in range(1,K):
-            theta_type,t_k,theta_k = theta[k]
-
+            theta_type,t_k,theta_k = theta[k] #theta_type will be one of the three types indicated; t_k is the time that the event occurs, theta_k is the info about the migmatrix or massmig event, or ooafrica this value is not used
             if(theta_type == 'mrate'):
-                Ne = theta_k[0]
-                mig = theta_k[1]
+                Ne = theta_k[0] #effective population size, right now equal to the N_AF value from the out-of-africa model (14474)
+                mig = theta_k[1] #migration matrix, size NxN where N is the number of populations
                 for i in range(Np):
                     # Set the Ne
-                    if(args.ooafrica and t_k <= 920):
+                    if(args.ooafrica and t_k <= 920): #If the out-of-africa model is being used as the initial events, we need to make sure that we add this event to the demo_events list before the time of the ooafrica events (920 generations)
                         demo_events.insert(0,ms.PopulationParametersChange(population=i,time=t_k,initial_size=Ne[i]))
-                    else:
+                    else: #Otherwise, just add it to the list of demographic events
                         demo_events.append(ms.PopulationParametersChange(population=i,time=t_k,initial_size=Ne[i]))
                     # Set the migration rates
                     for j in range(Np):
@@ -233,20 +222,19 @@ def run_msprime_tskit(theta,sample_nums,L,r,mu,R,outname=None,outname_epoch=None
                                 demo_events.append(ms.MigrationRateChange(time=t_k,rate=mig[i,j],matrix_index=tuple([i,j])))
             elif(theta_type == 'mass'):
                 Ne = theta_k[0]
-                massmig = theta_k[1]
+                massmig = theta_k[1] #Info about the mass migration event
                 for m in massmig:
                     if(args.ooafrica and t_k <= 920):
                         demo_events.insert(0,ms.MassMigration(time=t_k, source=m[0], destination=m[1], proportion=m[2]))
                     else:
                         demo_events.append(ms.MassMigration(time=t_k, source=m[0], destination=m[1], proportion=m[2]))
             elif(theta_type == 'ooafrica'):
-                ooa_pop_configs, ooa_mig, ooa_demoevents = outofafrica_model_parameters(theta[k][1])
+                ooa_pop_configs, ooa_mig, ooa_demoevents = outofafrica_model_parameters(theta[k][1]) #This function returns these 3 values, so we just need to add the demographic events to the list
                 for d in ooa_demoevents:
                     demo_events.append(d)
             else:
-                print('Epoch events should only be "mass" or "mrate"!')
+                print('Epoch events should only be "mass", "mrate", or "ooafrica"!')
                 return -1
-        print(demo_events)
         ts_replicates = ms.simulate(
             length=L,
             recombination_rate=r,
@@ -258,13 +246,6 @@ def run_msprime_tskit(theta,sample_nums,L,r,mu,R,outname=None,outname_epoch=None
         )
     else:
         print('there is only one epoch, starting now using theta {0}'.format(theta))
-        # if(args.ooafrica):
-        #     ooa_pop_configs, ooa_mig, ooa_demoevents = outofafrica_model_parameters()
-        #     for d in ooa_demoevents:
-        #         print(d)
-        #         init_demoevents.append(d)
-        #     if(init_mig is None): #The only event provided is a mass migration event, and the user specifies the out-of-africa flag, we can use that migration matrix as the initial migration matrix
-        #         init_mig = ooa_mig 
         # There is only the initial epoch. 
         if(init_mig is None): #If the first epoch event is a mass migration event, and the out-of-africa is not provided, then there's no migration matrix to provide
             ts_replicates = ms.simulate(
@@ -293,7 +274,7 @@ def run_msprime_tskit(theta,sample_nums,L,r,mu,R,outname=None,outname_epoch=None
                     num_replicates=R,
                     mutation_rate = mu
                 )
-    if(demo_events != None):
+    if(demo_events != None): #If there are any demographic events, make and save the DemographyDebugger so that the user can verify that the events occur as they wanted
         dp = ms.DemographyDebugger(
             population_configurations=init_pop_configs,
             migration_matrix=init_mig,
@@ -733,6 +714,8 @@ def run_pheno_simulation_multipops(theta,seq_len,reps,pop_schemes,r,mu,outname,b
 
 #This function sets up the out_of_africa model, outlined in the msprime tutorial and expanded by user "slowkoni" on github, from the Gravel 2011 paper
 #these values will be used to initialize a simulation so that additional user-definied events can simulated in more recent times
+#The events in this model follow the pattern of:
+#    Ancestral -> Africa -> { Africa, { Europe + East Asia } } -> { Africa, Europe, East Asia }
 def outofafrica_model_parameters(n_samples):
     generation_time = 25
 
