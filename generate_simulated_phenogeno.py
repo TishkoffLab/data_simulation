@@ -44,6 +44,8 @@ parser.add_argument("-p", "--phenotype", dest="make_phenotype",action='store_tru
                     help="provide this flag if you want the script to generate a phenotype file")
 parser.add_argument("-a", "--outofafrica", dest="ooafrica",action='store_true',
                     help="provide this flag if you want the script to use the outofafrica_model_parameters function as the initial demographic events")
+parser.add_argument("-g", "--recombmap", dest="recomb_map",
+                    help="file containing the recombination map for a single chromosome, from hapmap")
 
 # assign_genotype_index((num_individuals*num_pops),(num_individuals*num_pops)*2)
 #Take the genotypes that are simulated, and assign two of the indexes to each individual.
@@ -180,10 +182,9 @@ def read_input_file_full(filename):
 #mu: Mutation rate, constant accross all populations
 #R: Number of replicates; msprime will run R simulations and return an iterator over all trees created
 #Updated: Return list of ts_replicates; each entry will be the simulations for each epoch
-def run_msprime_tskit(theta,sample_nums,L,r,mu,R,outname=None,outname_epoch=None):
+def run_msprime_tskit(theta,sample_nums,L,r,mu,R,outname=None,outname_epoch=None,recomb_map=None):
     ts_replicates = None
     Np = len(sample_nums)
-
     demo_events = [] #This will be a list of demographic events. It must be ordered by time (ascending), or msprime will throw an error
 
     if(theta[0][0] == 'ooafrica'): #If the user wants the out-of-africa model to be used as the initial events for their simulation(s), the -a flag must be used when calling the script, and
@@ -235,45 +236,88 @@ def run_msprime_tskit(theta,sample_nums,L,r,mu,R,outname=None,outname_epoch=None
             else:
                 print('Epoch events should only be "mass", "mrate", or "ooafrica"!')
                 return -1
-        ts_replicates = ms.simulate(
-            length=L,
-            recombination_rate=r,
-            population_configurations=init_pop_configs,
-            migration_matrix = init_mig,
-            demographic_events=demo_events,
-            num_replicates=R,
-            mutation_rate = mu
-        )
+        if(recomb_map is None):
+            ts_replicates = ms.simulate(
+                length=L,
+                recombination_rate=r,
+                population_configurations=init_pop_configs,
+                migration_matrix = init_mig,
+                demographic_events=demo_events,
+                num_replicates=R,
+                mutation_rate = mu
+            )
+        else:
+            ts_replicates = ms.simulate(
+                # length=L,
+                recombination_map = ms.RecombinationMap.read_hapmap(recomb_map),
+                population_configurations=init_pop_configs,
+                migration_matrix = init_mig,
+                demographic_events=demo_events,
+                num_replicates=R,
+                mutation_rate = mu)
     else:
         print('there is only one epoch, starting now using theta {0}'.format(theta))
         # There is only the initial epoch. 
         if(init_mig is None): #If the first epoch event is a mass migration event, and the out-of-africa is not provided, then there's no migration matrix to provide
-            ts_replicates = ms.simulate(
-            length=L,
-            recombination_rate=r,
-            population_configurations=init_pop_configs,
-            demographic_events = demo_events,
-            num_replicates=R,
-            mutation_rate = mu)
-        else:
-            if(len(demo_events) > 0):
+            if(recomb_map is None):
                 ts_replicates = ms.simulate(
                 length=L,
                 recombination_rate=r,
                 population_configurations=init_pop_configs,
                 demographic_events = demo_events,
-                migration_matrix = init_mig,
                 num_replicates=R,
-                mutation_rate = mu)
+                mutation_rate = mu,
+                )
             else:
                 ts_replicates = ms.simulate(
+                # length=L,
+                recombination_map = ms.RecombinationMap.read_hapmap(recomb_map),
+                population_configurations=init_pop_configs,
+                demographic_events = demo_events,
+                num_replicates=R,
+                mutation_rate = mu,
+                )
+        else:
+            if(len(demo_events) > 0):
+                if(recomb_map is None):
+                    ts_replicates = ms.simulate(
                     length=L,
                     recombination_rate=r,
                     population_configurations=init_pop_configs,
+                    demographic_events = demo_events,
                     migration_matrix = init_mig,
                     num_replicates=R,
                     mutation_rate = mu
-                )
+                    )
+                else:
+                    ts_replicates = ms.simulate(
+                    # length=L,
+                    recombination_map = ms.RecombinationMap.read_hapmap(recomb_map),
+                    population_configurations=init_pop_configs,
+                    demographic_events = demo_events,
+                    migration_matrix = init_mig,
+                    num_replicates=R,
+                    mutation_rate = mu
+                    )
+            else:
+                if(recomb_map is None):
+                    ts_replicates = ms.simulate(
+                        length=L,
+                        recombination_rate=r,
+                        population_configurations=init_pop_configs,
+                        migration_matrix = init_mig,
+                        num_replicates=R,
+                        mutation_rate = mu
+                    )
+                else:
+                    ts_replicates = ms.simulate(
+                        # length=L,
+                        recombination_map = ms.RecombinationMap.read_hapmap(recomb_map),
+                        population_configurations=init_pop_configs,
+                        migration_matrix = init_mig,
+                        num_replicates=R,
+                        mutation_rate = mu
+                    )
     if(demo_events != None): #If there are any demographic events, make and save the DemographyDebugger so that the user can verify that the events occur as they wanted
         dp = ms.DemographyDebugger(
             population_configurations=init_pop_configs,
@@ -618,7 +662,7 @@ def thetas_toskip(theta):
 #Returns a 2 lists of dictionaries; per epoch. 
 #    causalpos_byepoch: for each replicate in the epoch, contains the position that was used to calculate the phenotype. Used to indicate in the output vcf file which SNP is the causal one
 #    genos_byepoch: for each replicate in each epoch, has a dictionary containing the full genotypes for all variants
-def run_pheno_simulation_multipops(theta,seq_len,reps,pop_schemes,r,mu,outname,beta='normal'):
+def run_pheno_simulation_multipops(theta,seq_len,reps,pop_schemes,r,mu,outname,beta='normal',recomb_map=None):
     
     genos_byepoch = []
     causalpos_byepoch = []
@@ -644,7 +688,7 @@ def run_pheno_simulation_multipops(theta,seq_len,reps,pop_schemes,r,mu,outname,b
             print('Epoch {0} has no migration, skipping this epoch due to memory constraints'.format(epoch))
             continue
         # print('epoch {0} theta = {1}'.format(epoch,curr_theta))
-        tsreps = run_msprime_tskit(curr_theta,pop_sizes,seq_len,r,mu,reps,outname,epoch)
+        tsreps = run_msprime_tskit(curr_theta,pop_sizes,seq_len,r,mu,reps,outname,epoch,recomb_map)
         # pdb.set_trace()
         print('replicate trees created; iterating through genotypes now')
 
@@ -830,7 +874,7 @@ if __name__ == "__main__":
             if(ep in epochs_toskip):
                 continue
             popdicts_by_epoch[ep] = assign_popdict(sampsch)
-        cpos_pheno_byinds,pgenos_byinds = run_pheno_simulation_multipops(theta,int(args.seq_len),int(args.L),sample_schemes,float(args.recombination_rate),float(args.mutation_rate),args.out_name,beta)
+        cpos_pheno_byinds,pgenos_byinds = run_pheno_simulation_multipops(theta,int(args.seq_len),int(args.L),sample_schemes,float(args.recombination_rate),float(args.mutation_rate),args.out_name,beta,args.recomb_map)
         curr_epoch = 0
         for epoch,pg in enumerate(pgenos_byinds):
             #Since we don't run a simulation where the final migration matrix is all zero, we want the output vcf files to match up with the output phenotypes
