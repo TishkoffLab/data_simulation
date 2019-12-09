@@ -191,6 +191,7 @@ def run_msprime_tskit(theta,sample_nums,L,r,mu,R,outname=None,outname_epoch=None
     if(theta[0][0] == 'ooafrica'): #If the user wants the out-of-africa model to be used as the initial events for their simulation(s), the -a flag must be used when calling the script, and
                                     #the first element in the input file must be ooafrica along with the population sizes to be drawn/recorded in this epoch
         init_pop_configs, init_mig, demo_events = outofafrica_model_parameters(sample_nums)
+        print('first epoch is ooafrica; the initial migration matrix is: {0}'.format(init_mig))
     else: #If the out-of-africa model is not used, we either are looking at a mrate (migration matrix) or a mass (mass migration) event as the initial epoch
         init_pop_configs = [ms.PopulationConfiguration(sample_size=sample_nums[i], initial_size=theta[0][2][0][i]) for i in range(Np)]
         
@@ -748,12 +749,12 @@ def run_pheno_simulation_multipops(theta,seq_len,reps,pop_schemes,r,mu,outname,b
                 curr_full_vars_posgeno_dict[0] = [0 for x in range((full_sampsize*2))]
             # causalpositions_byrep[rep] = curr_causal_pos
 
-            curr_rep_genotypes = []
-            for indiv,index in genotype_index_byinds.items():
-                try:
-                    curr_rep_genotypes.append((curr_causal_var[index[0]],curr_causal_var[index[1]]))
-                except:
-                    print('error getting the causal genotypes')
+            # curr_rep_genotypes = []
+            # for indiv,index in genotype_index_byinds.items():
+            #     try:
+            #         curr_rep_genotypes.append((curr_causal_var[index[0]],curr_causal_var[index[1]]))
+            #     except:
+            #         print('error getting the causal genotypes')
                     # print(indiv,index,len(curr_causal_var))
             # causalgenotypes_byrep[rep] = [curr_causal_pos,curr_rep_genotypes]
 
@@ -775,10 +776,9 @@ def run_pheno_simulation_multipops(theta,seq_len,reps,pop_schemes,r,mu,outname,b
             causalgenotypes_byind = {x:[] for x in range(full_sampsize)}
             for r in range(reps):
                 curr_fullgeno_dict,curr_causal_pos = get_genotypedict_fromfile(outname,epoch,r)
-                for num,g in enumerate(curr_fullgeno_dict):
+                for num,g in enumerate(curr_fullgeno_dict[curr_causal_pos]):
                     causalgenotypes_byind[num].append(g)
-        
-            beta = 'normal'
+
             phenotypes_byinds = {x:0 for x in range(full_sampsize)}
             beta_list = generate_betas(num_inds=reps,dist_type=beta)
             for i in range(full_sampsize):
