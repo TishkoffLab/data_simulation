@@ -606,6 +606,7 @@ def write_genovcf(reps,outname,num_inds,seq_len,epoch,window_spacer=1000,popid_d
 
             except:
                 print(rep,genos)
+    vcf_file.close()
         
 #Assigns individual ID numbers to the populations. IDs will be assined sequentially, so if pop 0 has a size of 4, IDs 0,1,2,3 will be assigned to pop 0.
 #    pop_sizes: list of ints, where each int is the population size of the population corrisponding to its position in the list
@@ -673,7 +674,6 @@ def write_genotyperep_file(genotypes,causal_pos,epoch,rep,outname):
 
 def get_genotypedict_fromfile(outname,epoch,rep):
     infile = open('{0}.epoch{1}.rep{2}.genotypes.temp'.format(outname,epoch,rep),'r')
-    full_geno_dict = {}
     curr_dict = {}
     curr_causalpos = infile.readline().split('\n')[0].split('\t')[1]
     for line in infile:
@@ -699,8 +699,9 @@ def get_genotypedict_fromfile(outname,epoch,rep):
 #    genos_byepoch: for each replicate in each epoch, has a dictionary containing the full genotypes for all variants
 def run_pheno_simulation_multipops(theta,seq_len,reps,pop_schemes,r,mu,outname,beta='normal',recomb_map=None):
     
-    genos_byepoch = []
-    causalpos_byepoch = []
+    # genos_byepoch = []
+    # causalpos_byepoch = []
+    seqsizes_byepoch = [] #only for when a recombination map is supplied - it will hold the highest positional variant generated from all reps per epoch, and then return that to be used as the seq_len
     epochs_toskip = thetas_toskip(theta)
     for epoch in range(len(theta)):
         print('Starting epoch {0} replicates'.format(epoch))
@@ -712,10 +713,11 @@ def run_pheno_simulation_multipops(theta,seq_len,reps,pop_schemes,r,mu,outname,b
         genotype_index_bypops = assign_genotype_index_multipop(sample_scheme,pop_sizes) #randomly take the <samp_size> number of genomes simulated, and randomly assign to each individual 2 of them
         genotype_index_byinds = get_ind_genoindex_multipop(genotype_index_bypops)
         # print(genotype_index_byinds)
-        causalgenotypes_byrep = {x:[] for x in range(reps)}
-        causalpositions_byrep = {x:0 for x in range(reps)}
-        fullgenotypes_byrep = {x:[] for x in range(reps)}
+        # causalgenotypes_byrep = {x:[] for x in range(reps)}
+        # causalpositions_byrep = {x:0 for x in range(reps)}
+        # fullgenotypes_byrep = {x:[] for x in range(reps)}
 
+        s_len = 0
 
         curr_theta = theta[:epoch+1]
         print('curr_theta = {0}'.format(curr_theta))
@@ -723,10 +725,19 @@ def run_pheno_simulation_multipops(theta,seq_len,reps,pop_schemes,r,mu,outname,b
             print('Epoch {0} has no migration, skipping this epoch due to memory constraints'.format(epoch))
             continue
         # print('epoch {0} theta = {1}'.format(epoch,curr_theta))
-        tsreps = run_msprime_tskit(curr_theta,pop_sizes,seq_len,r,mu,reps,outname,epoch,recomb_map)
-        # pdb.set_trace()
+        # tsreps = run_msprime_tskit(curr_theta,pop_sizes,seq_len,r,mu,reps,outname,epoch,recomb_map)
+        tsreps = run_msprime_tskit(theta=curr_theta,
+            sample_nums=pop_sizes,
+            L=seq_len,
+            r=r,
+            mu=mu,
+            R=reps,
+            outname=outname,
+            outname_epoch=epoch,
+            recomb_map=recomb_map)
+        
         print('replicate trees created; iterating through genotypes now')
-
+        # pdb.set_trace()
         for rep,tree_sequence in enumerate(tsreps): 
             # pdb.set_trace()
             # print('starting replicate {0}'.format(rep))
@@ -742,12 +753,17 @@ def run_pheno_simulation_multipops(theta,seq_len,reps,pop_schemes,r,mu,outname,b
                 if(variant.site.id == causal_var_id):
                     curr_causal_var = list(variant.genotypes)
                     curr_causal_pos = round(variant.site.position)
+                if(round(variant.site.position) > s_len):
+                    s_len = round(variant.site.position)
 
             if(len(curr_causal_var) != (full_sampsize*2)):
                 print('not enough causal variants in rep {0}'.format(rep))
                 curr_causal_var = [0 for x in range((full_sampsize*2))]
                 curr_full_vars_posgeno_dict[0] = [0 for x in range((full_sampsize*2))]
             # causalpositions_byrep[rep] = curr_causal_pos
+            if(recomb_map is None):
+                s_len = seq_len
+                
 
             # curr_rep_genotypes = []
             # for indiv,index in genotype_index_byinds.items():
@@ -772,23 +788,25 @@ def run_pheno_simulation_multipops(theta,seq_len,reps,pop_schemes,r,mu,outname,b
             write_genotyperep_file(curr_rep_fullgenos,curr_causal_pos,epoch,rep,outname)
         
         if(args.make_phenotype):
+            # pdb.set_trace()
             print('finished iterating through trees, starting the phenotype calculations')
             causalgenotypes_byind = {x:[] for x in range(full_sampsize)}
             for r in range(reps):
                 curr_fullgeno_dict,curr_causal_pos = get_genotypedict_fromfile(outname,epoch,r)
                 for num,g in enumerate(curr_fullgeno_dict[curr_causal_pos]):
                     causalgenotypes_byind[num].append(g)
-
+            # pdb.set_trace()
             phenotypes_byinds = {x:0 for x in range(full_sampsize)}
             beta_list = generate_betas(num_inds=reps,dist_type=beta)
             for i in range(full_sampsize):
                 phenotypes_byinds[i] = estimate_pheno(causalgenotypes_byind[i],beta_list)
             write_phenofile('{0}.epoch{1}'.format(outname,epoch),phenotypes_byinds)
-        
+        seqsizes_byepoch.append(s_len)
         # genos_byepoch.append(fullgenotypes_byrep)
         # causalpos_byepoch.append(causalpositions_byrep)
-    
+
     # return causalpos_byepoch,genos_byepoch
+    return seqsizes_byepoch
 
 
 
@@ -916,7 +934,14 @@ if __name__ == "__main__":
             if(ep in epochs_toskip):
                 continue
             popdicts_by_epoch[ep] = assign_popdict(sampsch)
-        run_pheno_simulation_multipops(theta,int(args.seq_len),int(args.L),sample_schemes,float(args.recombination_rate),float(args.mutation_rate),args.out_name,beta,recomb_map)
+        if(recomb_map is None):
+            updated_seqlen_byepoch = run_pheno_simulation_multipops(theta=theta,seq_len=int(args.seq_len),
+                reps=int(args.L),pop_schemes=sample_schemes,r=float(args.recombination_rate),
+                mu=float(args.mutation_rate),outname=args.out_name,beta=beta)
+        else:
+            updated_seqlen_byepoch = run_pheno_simulation_multipops(theta=theta,reps=int(args.L),pop_schemes=sample_schemes,
+                recomb_map=recomb_map,seq_len=0,r=0,
+                mu=float(args.mutation_rate),outname=args.out_name,beta=beta)
         curr_epoch = 0
         print('finished generating simulation files; starting to record vcf files')
         # print('popdicts_by_epoch: {0}'.format(popdicts_by_epoch))
@@ -930,7 +955,8 @@ if __name__ == "__main__":
                 epoch=epoch,
                 num_inds=len(popdicts_by_epoch[epoch].values()),
                 outname=args.out_name,
-                seq_len=int(args.seq_len),
+                seq_len=updated_seqlen_byepoch[epoch],
+                # seq_len=int(args.seq_len),
                 window_spacer=window,
                 popid_dict=curr_popid_dict)
             curr_epoch += 1
