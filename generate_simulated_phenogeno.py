@@ -169,6 +169,7 @@ def read_input_file_full(filename):
     if(args.ooafrica):
         theta_true.insert(0,['ooafrica',ooafrica_sampscheme,[]])
         sample_scheme_byepoch.insert(0,ooafrica_sampscheme)
+    infile.close()
     return theta_true,sample_scheme_byepoch
 
 #Runs the msprime simulate function, taking into account the 
@@ -190,6 +191,7 @@ def run_msprime_tskit(theta,sample_nums,L,r,mu,R,outname=None,outname_epoch=None
     if(theta[0][0] == 'ooafrica'): #If the user wants the out-of-africa model to be used as the initial events for their simulation(s), the -a flag must be used when calling the script, and
                                     #the first element in the input file must be ooafrica along with the population sizes to be drawn/recorded in this epoch
         init_pop_configs, init_mig, demo_events = outofafrica_model_parameters(sample_nums)
+        print('first epoch is ooafrica; the initial migration matrix is: {0}'.format(init_mig))
     else: #If the out-of-africa model is not used, we either are looking at a mrate (migration matrix) or a mass (mass migration) event as the initial epoch
         init_pop_configs = [ms.PopulationConfiguration(sample_size=sample_nums[i], initial_size=theta[0][2][0][i]) for i in range(Np)]
         
@@ -552,19 +554,19 @@ def run_geno_simulation(samp_size,seq_len,L,num_individuals,causal_var_id=1):
 #    window_spacer: length of bases that will be used to pad the positions between each replicate. Future functionality will allow the user to specify that each replicate will be on their own chromosome (number = replicate number), rather than have a window spacer.
 #    popid_dict: a dictionary that is only passed if the simulation has multiple populations. Keys are the individual ID, values are the population ID that they belong to.
 #        This will be used to write the ID to the VCF, formatted as POP<population_id>ID<individual_id>. If this is not passed to this function, the format of the ID is ID<individual_id>
-def write_genovcf(full_geno_dict,causal_pos_dict,outname,seq_len,window_spacer=1000,popid_dict=None):
+def write_genovcf(reps,outname,num_inds,seq_len,epoch,window_spacer=1000,popid_dict=None):
     use_diff_chrms = False
     if(window_spacer == 'chrm'):
         window_spacer = 0
         use_diff_chrms = True
-    full_len = len(full_geno_dict)*(window_spacer+seq_len)
+    full_len = reps*(window_spacer+seq_len)
     header_string = '##fileformat=VCFv4.2 \n##source=tskit 0.2.2 \n##FILTER=<ID=PASS,Description="All filters passed"> \n##INFO=<ID=CS,Number=0,Type=Flag,Description="SNP Causal to Phenotype"> \n##contig=<ID=1,length={0}>\n##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype"> \n'.format(full_len)
-    vcf_file = open('{0}.vcf'.format(outname),'w')
+    vcf_file = open('{0}.epoch{1}.pheno.vcf'.format(outname,epoch),'w')
     vcf_file.write(header_string)
     vcf_file.write('#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t')
     if(popid_dict == None):
         new_ids = []
-        for i in range(len(geno_dict[0][1])):
+        for i in range(num_inds):
             curr_nid = ''.join(['ID',str(i)])
             new_ids.append(curr_nid)
             vcf_file.write('{0}\t'.format(curr_nid))
@@ -576,23 +578,32 @@ def write_genovcf(full_geno_dict,causal_pos_dict,outname,seq_len,window_spacer=1
             new_ids.append(curr_nid)
             vcf_file.write('{0}\t'.format(curr_nid))
         vcf_file.write('\n')
-    for rep,geno_dict in full_geno_dict.items():
+    for rep in range(reps):
+        geno_dict,causal_pos = get_genotypedict_fromfile(outname,epoch,rep)
         is_rep_causalsnp = False
         for pos,genos in geno_dict.items():
             try:
                 if(use_diff_chrms == True):
-                    chrm_touse = rep
+                    curr_pos = (int(rep)*(window_spacer+seq_len))+pos
+                    if(pos == causal_pos):
+                        is_rep_causalsnp = True
+                        vcf_file.write('{0}\t{1}\t.\tA\tG\t.\tPASS\tCS\tGT\t'.format(rep,curr_pos))
+                    else:
+                        vcf_file.write('{0}\t{1}\t.\tA\tG\t.\tPASS\t.\tGT\t'.format(rep,curr_pos))
+                    for g in genos:
+                        vcf_file.write('{0}|{1}\t'.format(g[0],g[1]))
+                    vcf_file.write('\n')
                 else:
-                    chrm_touse = 1
-                curr_pos = (int(rep)*(window_spacer+seq_len))+pos
-                if(pos == causal_pos_dict[rep]):
-                    is_rep_causalsnp = True
-                    vcf_file.write('{0}\t{1}\t.\tA\tG\t.\tPASS\tCS\tGT\t'.format(chrm_touse,curr_pos))
-                else:
-                    vcf_file.write('{0}\t{1}\t.\tA\tG\t.\tPASS\t.\tGT\t'.format(chrm_touse,curr_pos))
-                for g in genos:
-                    vcf_file.write('{0}|{1}\t'.format(g[0],g[1]))
-                vcf_file.write('\n')
+                    curr_pos = (int(rep)*(window_spacer+seq_len))+pos
+                    if(pos == causal_pos):
+                        is_rep_causalsnp = True
+                        vcf_file.write('1\t{0}\t.\tA\tG\t.\tPASS\tCS\tGT\t'.format(curr_pos))
+                    else:
+                        vcf_file.write('1\t{0}\t.\tA\tG\t.\tPASS\t.\tGT\t'.format(curr_pos))
+                    for g in genos:
+                        vcf_file.write('{0}|{1}\t'.format(g[0],g[1]))
+                    vcf_file.write('\n')
+
             except:
                 print(rep,genos)
     vcf_file.close()
@@ -650,6 +661,30 @@ def thetas_toskip(theta):
     return bad_theta_nums
 
 
+
+def write_genotyperep_file(genotypes,causal_pos,epoch,rep,outname):
+    outfile = open('{0}.epoch{1}.rep{2}.genotypes.temp'.format(outname,epoch,rep),'w')
+    outfile.write('{0}\t{1}\n'.format(rep,causal_pos))
+    for pos,genos in genotypes.items():
+        outfile.write('{0}\t'.format(pos))
+        for g in genos[:-1]:
+            outfile.write('{0}|{1};'.format(g[0],g[1]))
+        outfile.write('{0}|{1}\n'.format(genos[-1][0],genos[-1][1]))
+    outfile.close()
+
+def get_genotypedict_fromfile(outname,epoch,rep):
+    infile = open('{0}.epoch{1}.rep{2}.genotypes.temp'.format(outname,epoch,rep),'r')
+    curr_dict = {}
+    curr_causalpos = infile.readline().split('\n')[0].split('\t')[1]
+    for line in infile:
+        line = line.split('\n')[0].split('\t')
+        temp_genos = []
+        for g in line[1].split(';'):
+            temp_genos.append(tuple([int(x) for x in g.split('|')]))
+        curr_dict[int(line[0])] = temp_genos
+    infile.close()
+    return curr_dict,int(curr_causalpos)
+
 #Runs the phenotype-generating simulation, for multiple populations and multiple epochs
 #    theta: list of variables, each entry indicates an epoch. See the description for run_msprime_tskit() to see the full details of this variable
 #    seq_len (int): length of the sequence that will be simulated
@@ -664,8 +699,9 @@ def thetas_toskip(theta):
 #    genos_byepoch: for each replicate in each epoch, has a dictionary containing the full genotypes for all variants
 def run_pheno_simulation_multipops(theta,seq_len,reps,pop_schemes,r,mu,outname,beta='normal',recomb_map=None):
     
-    genos_byepoch = []
-    causalpos_byepoch = []
+    # genos_byepoch = []
+    # causalpos_byepoch = []
+    seqsizes_byepoch = [] #only for when a recombination map is supplied - it will hold the highest positional variant generated from all reps per epoch, and then return that to be used as the seq_len
     epochs_toskip = thetas_toskip(theta)
     for epoch in range(len(theta)):
         print('Starting epoch {0} replicates'.format(epoch))
@@ -677,10 +713,11 @@ def run_pheno_simulation_multipops(theta,seq_len,reps,pop_schemes,r,mu,outname,b
         genotype_index_bypops = assign_genotype_index_multipop(sample_scheme,pop_sizes) #randomly take the <samp_size> number of genomes simulated, and randomly assign to each individual 2 of them
         genotype_index_byinds = get_ind_genoindex_multipop(genotype_index_bypops)
         # print(genotype_index_byinds)
-        causalgenotypes_byrep = {x:[] for x in range(reps)}
-        causalpositions_byrep = {x:0 for x in range(reps)}
-        fullgenotypes_byrep = {x:[] for x in range(reps)}
+        # causalgenotypes_byrep = {x:[] for x in range(reps)}
+        # causalpositions_byrep = {x:0 for x in range(reps)}
+        # fullgenotypes_byrep = {x:[] for x in range(reps)}
 
+        s_len = 0
 
         curr_theta = theta[:epoch+1]
         print('curr_theta = {0}'.format(curr_theta))
@@ -688,10 +725,19 @@ def run_pheno_simulation_multipops(theta,seq_len,reps,pop_schemes,r,mu,outname,b
             print('Epoch {0} has no migration, skipping this epoch due to memory constraints'.format(epoch))
             continue
         # print('epoch {0} theta = {1}'.format(epoch,curr_theta))
-        tsreps = run_msprime_tskit(curr_theta,pop_sizes,seq_len,r,mu,reps,outname,epoch,recomb_map)
-        # pdb.set_trace()
+        # tsreps = run_msprime_tskit(curr_theta,pop_sizes,seq_len,r,mu,reps,outname,epoch,recomb_map)
+        tsreps = run_msprime_tskit(theta=curr_theta,
+            sample_nums=pop_sizes,
+            L=seq_len,
+            r=r,
+            mu=mu,
+            R=reps,
+            outname=outname,
+            outname_epoch=epoch,
+            recomb_map=recomb_map)
+        
         print('replicate trees created; iterating through genotypes now')
-
+        # pdb.set_trace()
         for rep,tree_sequence in enumerate(tsreps): 
             # pdb.set_trace()
             # print('starting replicate {0}'.format(rep))
@@ -707,21 +753,26 @@ def run_pheno_simulation_multipops(theta,seq_len,reps,pop_schemes,r,mu,outname,b
                 if(variant.site.id == causal_var_id):
                     curr_causal_var = list(variant.genotypes)
                     curr_causal_pos = round(variant.site.position)
+                if(round(variant.site.position) > s_len):
+                    s_len = round(variant.site.position)
 
             if(len(curr_causal_var) != (full_sampsize*2)):
                 print('not enough causal variants in rep {0}'.format(rep))
                 curr_causal_var = [0 for x in range((full_sampsize*2))]
                 curr_full_vars_posgeno_dict[0] = [0 for x in range((full_sampsize*2))]
-            causalpositions_byrep[rep] = curr_causal_pos
+            # causalpositions_byrep[rep] = curr_causal_pos
+            if(recomb_map is None):
+                s_len = seq_len
+                
 
-            curr_rep_genotypes = []
-            for indiv,index in genotype_index_byinds.items():
-                try:
-                    curr_rep_genotypes.append((curr_causal_var[index[0]],curr_causal_var[index[1]]))
-                except:
-                    print('error getting the causal genotypes')
+            # curr_rep_genotypes = []
+            # for indiv,index in genotype_index_byinds.items():
+            #     try:
+            #         curr_rep_genotypes.append((curr_causal_var[index[0]],curr_causal_var[index[1]]))
+            #     except:
+            #         print('error getting the causal genotypes')
                     # print(indiv,index,len(curr_causal_var))
-            causalgenotypes_byrep[rep] = [curr_causal_pos,curr_rep_genotypes]
+            # causalgenotypes_byrep[rep] = [curr_causal_pos,curr_rep_genotypes]
 
             curr_rep_fullgenos = {}
             for pos,geno in curr_full_vars_posgeno_dict.items():
@@ -733,27 +784,31 @@ def run_pheno_simulation_multipops(theta,seq_len,reps,pop_schemes,r,mu,outname,b
                         print('error getting the full genotypes')
                         # print(rep,indiv,index,len(geno))
                 curr_rep_fullgenos[pos] = temp_fullgeno
-            fullgenotypes_byrep[rep] = curr_rep_fullgenos
-
-        print('finished iterating through trees, starting the phenotype calculations')
-        causalgenotypes_byind = {x:[] for x in range(full_sampsize)}
-        for pos,genos in causalgenotypes_byrep.items():
-            for num,g in enumerate(genos[1]):
-                causalgenotypes_byind[num].append(g)
+            # fullgenotypes_byrep[rep] = curr_rep_fullgenos
+            write_genotyperep_file(curr_rep_fullgenos,curr_causal_pos,epoch,rep,outname)
+        
         if(args.make_phenotype):
-            beta = 'normal'
+            # pdb.set_trace()
+            print('finished iterating through trees, starting the phenotype calculations')
+            causalgenotypes_byind = {x:[] for x in range(full_sampsize)}
+            for r in range(reps):
+                curr_fullgeno_dict,curr_causal_pos = get_genotypedict_fromfile(outname,epoch,r)
+                for num,g in enumerate(curr_fullgeno_dict[curr_causal_pos]):
+                    causalgenotypes_byind[num].append(g)
+            # pdb.set_trace()
             phenotypes_byinds = {x:0 for x in range(full_sampsize)}
             beta_list = generate_betas(num_inds=reps,dist_type=beta)
             for i in range(full_sampsize):
-                # curr_beta = beta_list[i]
                 phenotypes_byinds[i] = estimate_pheno(causalgenotypes_byind[i],beta_list)
-            # phenos_byepoch.append(phenotypes_byinds)
             write_phenofile('{0}.epoch{1}'.format(outname,epoch),phenotypes_byinds)
-        
-        genos_byepoch.append(fullgenotypes_byrep)
-        causalpos_byepoch.append(causalpositions_byrep)
-    
-    return causalpos_byepoch,genos_byepoch
+        seqsizes_byepoch.append(s_len)
+        # genos_byepoch.append(fullgenotypes_byrep)
+        # causalpos_byepoch.append(causalpositions_byrep)
+
+    # return causalpos_byepoch,genos_byepoch
+    return seqsizes_byepoch
+
+
 
 
 #This function sets up the out_of_africa model, outlined in the msprime tutorial and expanded by user "slowkoni" on github, from the Gravel 2011 paper
@@ -853,6 +908,11 @@ if __name__ == "__main__":
     else:
         beta = args.beta_type
 
+    if(args.recomb_map is None):
+        recomb_map = None
+    else:
+        recomb_map = args.recomb_map
+
     if(type(args.window) == str):
         window = 'chrm'
     else:
@@ -874,18 +934,29 @@ if __name__ == "__main__":
             if(ep in epochs_toskip):
                 continue
             popdicts_by_epoch[ep] = assign_popdict(sampsch)
-        cpos_pheno_byinds,pgenos_byinds = run_pheno_simulation_multipops(theta,int(args.seq_len),int(args.L),sample_schemes,float(args.recombination_rate),float(args.mutation_rate),args.out_name,beta,args.recomb_map)
+        if(recomb_map is None):
+            updated_seqlen_byepoch = run_pheno_simulation_multipops(theta=theta,seq_len=int(args.seq_len),
+                reps=int(args.L),pop_schemes=sample_schemes,r=float(args.recombination_rate),
+                mu=float(args.mutation_rate),outname=args.out_name,beta=beta)
+        else:
+            updated_seqlen_byepoch = run_pheno_simulation_multipops(theta=theta,reps=int(args.L),pop_schemes=sample_schemes,
+                recomb_map=recomb_map,seq_len=0,r=0,
+                mu=float(args.mutation_rate),outname=args.out_name,beta=beta)
         curr_epoch = 0
-        for epoch,pg in enumerate(pgenos_byinds):
+        print('finished generating simulation files; starting to record vcf files')
+        # print('popdicts_by_epoch: {0}'.format(popdicts_by_epoch))
+        for epoch in popdicts_by_epoch.keys():
             #Since we don't run a simulation where the final migration matrix is all zero, we want the output vcf files to match up with the output phenotypes
             while curr_epoch in epochs_toskip:
                 curr_epoch += 1
             print('starting creation of vcf for epoch {0} simulation'.format(curr_epoch))
             curr_popid_dict = popdicts_by_epoch[curr_epoch]
-            write_genovcf(full_geno_dict=pg,
-                causal_pos_dict=cpos_pheno_byinds[epoch],
-                outname='{0}.epoch{1}.pheno'.format(args.out_name,curr_epoch),
-                seq_len=int(args.seq_len),
+            write_genovcf(reps=int(args.L),
+                epoch=epoch,
+                num_inds=len(popdicts_by_epoch[epoch].values()),
+                outname=args.out_name,
+                seq_len=updated_seqlen_byepoch[epoch],
+                # seq_len=int(args.seq_len),
                 window_spacer=window,
                 popid_dict=curr_popid_dict)
             curr_epoch += 1
